@@ -2,11 +2,11 @@
 //! Internationalisation string table for the baler panel UI (ISSUE_0005).
 //!
 //! This module holds every static UI label in English and German in one place
-//! per language — the intended single source of truth for the UI's text. The
-//! Slint view and the language-aware mode/knife/fault mappers are wired to it in
-//! ISSUE_0006; until then `main.rs` still carries the original English literals.
-//! It is pure Rust — no Slint, no filesystem access — and therefore compiles and
-//! tests on the host without the `device` feature.
+//! per language — the single source of truth for the UI's text. The Slint view
+//! and the language-aware mode/knife/fault mappers are wired to it (ISSUE_0006);
+//! the runtime toggle between EN and DE is handled by F3 on the service screen
+//! (ISSUE_0007). It is pure Rust — no Slint, no filesystem access — and therefore
+//! compiles and tests on the host without the `device` feature.
 
 // ---------------------------------------------------------------------------
 // Language discriminant

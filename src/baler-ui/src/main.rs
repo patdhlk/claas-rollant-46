@@ -329,11 +329,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // push_view resolves all language-dependent text from `lang` each call so
-    // that a language toggle is immediately reflected across ALL screens.
+    // push_view resolves all language-dependent text from `lang` each call
+    // (called only when the dedup key changes) so a language toggle is
+    // immediately reflected across ALL screens without a separate rebuild path.
     let push_view =
         |ui: &AppWindow, nav: Nav, snap: &StateSnapshot, service: &ServiceState, lang: Lang| {
             let strings = i18n::table(lang);
+            let other = i18n::table(lang.other());
             let tr = I18n {
                 title: strings.title.into(),
                 bale_full_banner: strings.bale_full_banner.into(),
@@ -362,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fault_detail: strings.fault_detail.into(),
                 // Label shows the TARGET language so the operator knows what
                 // pressing F3 will switch to.
-                sk_language: i18n::table(lang.other()).language_name.into(),
+                sk_language: other.language_name.into(),
             };
             ui.set_tr(tr);
             let slint_screen = match nav {

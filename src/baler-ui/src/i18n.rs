@@ -360,6 +360,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn en_and_de_differ_except_for_intentionally_shared_fields() {
+        // A real translation must differ between languages. The only fields that
+        // are legitimately identical in EN and DE are the brand title and the
+        // protocol name "ETHERNET". Anything else matching means an English
+        // string was copy-pasted into the German table (or vice-versa).
+        const SHARED: &[&str] = &["title", "mode_ethernet"];
+        let (en, de) = (table(Lang::En), table(Lang::De));
+        for (name, f) in ACCESSORS {
+            if SHARED.contains(name) {
+                continue;
+            }
+            assert_ne!(
+                f(en),
+                f(de),
+                "EN.{name} and DE.{name} are identical (\"{}\") — likely an \
+                 untranslated string. Add it to SHARED only if that is intended.",
+                f(en)
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Spot-check selected strings for correct content
     // -----------------------------------------------------------------------

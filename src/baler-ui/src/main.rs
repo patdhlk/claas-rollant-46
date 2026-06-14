@@ -17,6 +17,10 @@
 #[cfg(feature = "device")]
 mod platform;
 
+// i18n: pure-Rust string table — compiles on host (for tests) and on device.
+#[cfg(any(feature = "device", test))]
+pub mod i18n;
+
 // ===========================================================================
 // Host stub: no slint, no cr1140-hal. Keeps `cargo build` green on the host.
 // ===========================================================================

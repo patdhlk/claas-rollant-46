@@ -195,7 +195,7 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: Render the baler-ui in both English and German from the i18n table
    :id: ISSUE_0006
-   :status: ready-for-agent
+   :status: in-progress
    :kind: feature
    :links: REQ_0017
 

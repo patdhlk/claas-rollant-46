@@ -229,7 +229,7 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: PIN-free language toggle softkey on the service screen
    :id: ISSUE_0007
-   :status: ready-for-agent
+   :status: in-progress
    :kind: feature
    :links: REQ_0018
 

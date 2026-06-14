@@ -316,22 +316,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut nav = Nav::Main;
     let mut service = ServiceState::new();
 
-    // TODO ISSUE_0006: drive these from i18n::table(lang) (the mode_*/knife_*
-    // and fault_link_lost fields) instead of hardcoded English, once language
-    // selection is wired in.
+    // Language is fixed to the compile-time default (German) in this slice.
+    // The operator toggle and persistence come in a later task (ISSUE_0007).
+    use crate::i18n::{self, Lang};
+    let lang = Lang::default();
+    let strings = i18n::table(lang);
+
     let mode_text = |m: Mode| -> &'static str {
+        let s = i18n::table(lang);
         match m {
-            Mode::Initializing => "INITIALISING",
-            Mode::Operational => "OPERATIONAL",
-            Mode::Fault => "FAULT",
-            Mode::Ethernet => "ETHERNET",
+            Mode::Initializing => s.mode_initialising,
+            Mode::Operational => s.mode_operational,
+            Mode::Fault => s.mode_fault,
+            Mode::Ethernet => s.mode_ethernet,
         }
     };
     let knife_text = |k: KnifePos| -> &'static str {
+        let s = i18n::table(lang);
         match k {
-            KnifePos::Unknown => "UNKNOWN",
-            KnifePos::In => "IN",
-            KnifePos::Out => "OUT",
+            KnifePos::Unknown => s.knife_unknown,
+            KnifePos::In => s.knife_in,
+            KnifePos::Out => s.knife_out,
         }
     };
     let ip_text = |s: &StateSnapshot| -> String {
@@ -341,6 +346,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "—".into()
         }
     };
+
+    // Build the I18n struct once from the string table and set it on the UI.
+    // `lang` is constant for this slice so this only needs to run once.
+    let tr = I18n {
+        title: strings.title.into(),
+        bale_full_banner: strings.bale_full_banner.into(),
+        session_caption: strings.session_caption.into(),
+        total_caption: strings.total_caption.into(),
+        knife_caption: strings.knife_caption.into(),
+        sk_wrap: strings.sk_wrap.into(),
+        sk_wrapping: strings.sk_wrapping.into(),
+        sk_knife_toggle: strings.sk_knife_toggle.into(),
+        sk_knife_active: strings.sk_knife_active.into(),
+        sk_reset_session: strings.sk_reset_session.into(),
+        sk_service: strings.sk_service.into(),
+        service_title: strings.service_title.into(),
+        enter_pin: strings.enter_pin.into(),
+        pin_hint: strings.pin_hint.into(),
+        network_caption: strings.network_caption.into(),
+        sk_reset_total: strings.sk_reset_total.into(),
+        sk_use_ethernet: strings.sk_use_ethernet.into(),
+        sk_use_ethercat: strings.sk_use_ethercat.into(),
+        sk_back: strings.sk_back.into(),
+        eth_title: strings.eth_title.into(),
+        eth_offline: strings.eth_offline.into(),
+        static_ip_caption: strings.static_ip_caption.into(),
+        sk_return_ethercat: strings.sk_return_ethercat.into(),
+        fault_title: strings.fault_title.into(),
+        fault_detail: strings.fault_detail.into(),
+    };
+    ui.set_tr(tr);
 
     let push_view = |ui: &AppWindow, nav: Nav, snap: &StateSnapshot, service: &ServiceState| {
         let slint_screen = match nav {
@@ -362,7 +398,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_ip_text(ip_text(snap).into());
         ui.set_pin_display(service.display().into());
         ui.set_ethernet_selected(service.ethernet_selected);
-        ui.set_fault_text("ETHERCAT LINK LOST".into()); // TODO ISSUE_0006: i18n fault_link_lost
+        ui.set_fault_text(i18n::table(lang).fault_link_lost.into());
     };
 
     push_view(&ui, nav, &snap, &service);

@@ -7,6 +7,44 @@
 // Screen selector, driven from Rust. Mirrors the Rust `Nav` enum by index.
 export enum Screen { main, service, ethernet, fault }
 
+/// All static UI labels for one language, mirroring i18n::Strings.
+/// Field names use kebab-case; Slint maps '-' to '_' in the generated Rust type
+/// so `bale-full-banner` → Rust field `bale_full_banner`.
+export struct I18n {
+    // Main screen
+    title: string,
+    bale-full-banner: string,
+    session-caption: string,
+    total-caption: string,
+    knife-caption: string,
+    sk-wrap: string,
+    sk-wrapping: string,
+    sk-knife-toggle: string,
+    sk-knife-active: string,
+    sk-reset-session: string,
+    sk-service: string,
+
+    // Service screen
+    service-title: string,
+    enter-pin: string,
+    pin-hint: string,
+    network-caption: string,
+    sk-reset-total: string,
+    sk-use-ethernet: string,
+    sk-use-ethercat: string,
+    sk-back: string,
+
+    // Ethernet screen
+    eth-title: string,
+    eth-offline: string,
+    static-ip-caption: string,
+    sk-return-ethercat: string,
+
+    // Fault screen
+    fault-title: string,
+    fault-detail: string,
+}
+
 global Theme {
     out property <color> bg: #0e1116;
     out property <color> panel: #1b2230;
@@ -80,11 +118,14 @@ export component AppWindow inherits Window {
     background: Theme.bg;
     default-font-size: 16px;
 
+    // ---- i18n string table (set from Rust via set_tr) ----------------------
+    in property <I18n> tr;
+
     // ---- inputs from StateSnapshot -------------------------------------
     in property <Screen> screen: Screen.main;
-    in property <string> mode-text: "INITIALISING";
+    in property <string> mode-text: "INITIALISIERUNG";
     in property <bool> bale-full: false;
-    in property <string> knife-text: "UNKNOWN";
+    in property <string> knife-text: "UNBEKANNT";
     in property <bool> wrap-armed: false;
     in property <bool> wrap-active: false;
     in property <bool> knife-active: false;
@@ -94,7 +135,12 @@ export component AppWindow inherits Window {
     in property <string> ip-text: "—";
     in property <string> pin-display: "____";
     in property <bool> ethernet-selected: false;
-    in property <string> fault-text: "ETHERCAT LINK LOST";
+    in property <string> fault-text: "ETHERCAT-VERBINDUNG VERLOREN";
+
+    // Glyph anchor: forces the EmbedForSoftwareRenderer font pass to embed
+    // German umlaut and ß glyphs, which otherwise never appear in .slint
+    // literals (the German strings live in Rust). Keep visible: false.
+    Text { text: "ÄÖÜäöüß"; visible: false; }
 
     // =====================================================================
     // MAIN
@@ -107,7 +153,7 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 spacing: 12px;
                 Text {
-                    text: "BALER";
+                    text: root.tr.title;
                     color: Theme.text;
                     font-size: 26px;
                     font-weight: 800;
@@ -148,7 +194,7 @@ export component AppWindow inherits Window {
                 visible: root.bale-full;
                 background: Theme.warn;
                 Text {
-                    text: "● BALE FULL — READY TO WRAP";
+                    text: root.tr.bale-full-banner;
                     color: #1a1300;
                     font-size: 28px;
                     font-weight: 800;
@@ -158,17 +204,17 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 spacing: 12px;
                 StatTile {
-                    caption: "SESSION";
+                    caption: root.tr.session-caption;
                     value: root.session-text;
                     horizontal-stretch: 1;
                 }
                 StatTile {
-                    caption: "TOTAL";
+                    caption: root.tr.total-caption;
                     value: root.total-text;
                     horizontal-stretch: 1;
                 }
                 StatTile {
-                    caption: "KNIFE";
+                    caption: root.tr.knife-caption;
                     value: root.knife-text;
                     value-color: root.knife-active ? Theme.accent : Theme.text;
                     horizontal-stretch: 1;
@@ -181,18 +227,18 @@ export component AppWindow inherits Window {
                 alignment: space-between;
                 Softkey {
                     key: "F1";
-                    label: root.wrap-active ? "WRAPPING…" : "WRAP";
+                    label: root.wrap-active ? root.tr.sk-wrapping : root.tr.sk-wrap;
                     highlighted: root.wrap-armed;
                     enabled: root.wrap-armed;
                 }
                 Softkey {
                     key: "F2";
-                    label: root.knife-active ? "KNIVES…" : "TOGGLE KNIVES";
+                    label: root.knife-active ? root.tr.sk-knife-active : root.tr.sk-knife-toggle;
                 }
-                Softkey { key: "F3"; label: "RESET SESSION"; }
+                Softkey { key: "F3"; label: root.tr.sk-reset-session; }
                 Softkey { key: "F4"; label: ""; enabled: false; }
                 Softkey { key: "F5"; label: ""; enabled: false; }
-                Softkey { key: "F6"; label: "SERVICE"; }
+                Softkey { key: "F6"; label: root.tr.sk-service; }
             }
         }
     }
@@ -204,7 +250,7 @@ export component AppWindow inherits Window {
         VerticalLayout {
             padding: 16px;
             spacing: 14px;
-            Text { text: "SERVICE"; color: Theme.text; font-size: 26px; font-weight: 800; }
+            Text { text: root.tr.service-title; color: Theme.text; font-size: 26px; font-weight: 800; }
 
             Rectangle {
                 border-radius: 8px;
@@ -214,7 +260,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 16px;
                     spacing: 10px;
-                    Text { text: "ENTER PIN"; color: Theme.muted; font-size: 16px; }
+                    Text { text: root.tr.enter-pin; color: Theme.muted; font-size: 16px; }
                     Text {
                         text: root.pin-display;
                         color: Theme.text;
@@ -223,7 +269,7 @@ export component AppWindow inherits Window {
                         letter-spacing: 12px;
                     }
                     Text {
-                        text: "▲▼ digit   ◀▶ position   Enter confirm";
+                        text: root.tr.pin-hint;
                         color: Theme.muted;
                         font-size: 14px;
                     }
@@ -240,8 +286,9 @@ export component AppWindow inherits Window {
                     border-color: root.ethernet-selected ? Theme.panel-edge : Theme.accent;
                     VerticalLayout {
                         padding: 12px;
-                        Text { text: "NETWORK"; color: Theme.muted; font-size: 13px; }
+                        Text { text: root.tr.network-caption; color: Theme.muted; font-size: 13px; }
                         Text {
+                            // ETHERNET / ETHERCAT are proper nouns — untranslated.
                             text: root.ethernet-selected ? "ETHERNET" : "ETHERCAT";
                             color: Theme.text; font-size: 22px; font-weight: 700;
                         }
@@ -253,12 +300,12 @@ export component AppWindow inherits Window {
 
             HorizontalLayout {
                 alignment: space-between;
-                Softkey { key: "F1"; label: "RESET TOTAL"; }
-                Softkey { key: "F2"; label: root.ethernet-selected ? "USE ETHERCAT" : "USE ETHERNET"; }
+                Softkey { key: "F1"; label: root.tr.sk-reset-total; }
+                Softkey { key: "F2"; label: root.ethernet-selected ? root.tr.sk-use-ethercat : root.tr.sk-use-ethernet; }
                 Softkey { key: "F3"; label: ""; enabled: false; }
                 Softkey { key: "F4"; label: ""; enabled: false; }
                 Softkey { key: "F5"; label: ""; enabled: false; }
-                Softkey { key: "F6"; label: "BACK"; }
+                Softkey { key: "F6"; label: root.tr.sk-back; }
             }
         }
     }
@@ -270,7 +317,7 @@ export component AppWindow inherits Window {
         VerticalLayout {
             padding: 16px;
             spacing: 14px;
-            Text { text: "ETHERNET MODE"; color: Theme.accent; font-size: 26px; font-weight: 800; }
+            Text { text: root.tr.eth-title; color: Theme.accent; font-size: 26px; font-weight: 800; }
 
             Rectangle {
                 height: 64px;
@@ -279,7 +326,7 @@ export component AppWindow inherits Window {
                 border-width: 1px;
                 border-color: Theme.accent;
                 Text {
-                    text: "CONTROL OFFLINE — ETHERCAT STOPPED";
+                    text: root.tr.eth-offline;
                     color: Theme.text; font-size: 22px; font-weight: 700;
                 }
             }
@@ -292,7 +339,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 16px;
                     spacing: 6px;
-                    Text { text: "STATIC IP"; color: Theme.muted; font-size: 16px; }
+                    Text { text: root.tr.static-ip-caption; color: Theme.muted; font-size: 16px; }
                     Text { text: root.ip-text; color: Theme.text; font-size: 40px; font-weight: 800; }
                 }
             }
@@ -301,7 +348,7 @@ export component AppWindow inherits Window {
 
             HorizontalLayout {
                 alignment: space-between;
-                Softkey { key: "F1"; label: "RETURN TO ETHERCAT"; }
+                Softkey { key: "F1"; label: root.tr.sk-return-ethercat; }
                 Softkey { key: "F2"; label: ""; enabled: false; }
                 Softkey { key: "F3"; label: ""; enabled: false; }
                 Softkey { key: "F4"; label: ""; enabled: false; }
@@ -328,7 +375,7 @@ export component AppWindow inherits Window {
                 spacing: 14px;
                 alignment: center;
                 Text {
-                    text: "⚠ FAULT";
+                    text: root.tr.fault-title;
                     color: Theme.danger;
                     font-size: 44px;
                     font-weight: 800;
@@ -342,7 +389,7 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                 }
                 Text {
-                    text: "Outputs dropped by the coupler watchdog.\nClears automatically when the bus recovers.";
+                    text: root.tr.fault-detail;
                     color: Theme.muted;
                     font-size: 16px;
                     horizontal-alignment: center;

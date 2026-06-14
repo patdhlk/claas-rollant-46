@@ -165,7 +165,7 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: i18n string table and host tests for English/German UI text
    :id: ISSUE_0005
-   :status: in-progress
+   :status: done
    :kind: feature
    :links: REQ_0017
 

@@ -123,9 +123,12 @@ export component AppWindow inherits Window {
 
     // ---- inputs from StateSnapshot -------------------------------------
     in property <Screen> screen: Screen.main;
-    in property <string> mode-text: "INITIALISIERUNG";
+    // mode/knife/fault text are language-aware and always set from Rust via
+    // push_view before the first draw; defaults stay blank so no untranslated
+    // literal lives in the view (the i18n table is the sole source of truth).
+    in property <string> mode-text;
     in property <bool> bale-full: false;
-    in property <string> knife-text: "UNBEKANNT";
+    in property <string> knife-text;
     in property <bool> wrap-armed: false;
     in property <bool> wrap-active: false;
     in property <bool> knife-active: false;
@@ -135,7 +138,7 @@ export component AppWindow inherits Window {
     in property <string> ip-text: "—";
     in property <string> pin-display: "____";
     in property <bool> ethernet-selected: false;
-    in property <string> fault-text: "ETHERCAT-VERBINDUNG VERLOREN";
+    in property <string> fault-text;
 
     // Glyph anchor: forces the EmbedForSoftwareRenderer font pass to embed
     // German umlaut and ß glyphs, which otherwise never appear in .slint

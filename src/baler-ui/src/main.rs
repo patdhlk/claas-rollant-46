@@ -254,10 +254,12 @@ const LANG_PATH: &str = "/var/lib/baler/language";
 #[cfg(feature = "device")]
 const LANG_PATH_FALLBACK: &str = "/tmp/baler-language";
 
-/// Load the persisted language selection from disk (ISSUE_0008).
+/// Load the persisted language selection from disk.
 ///
 /// Tries the primary path first, then the fallback, then returns the default
-/// (German). A missing or malformed file silently falls back to the default.
+/// (German). An unreadable primary file (missing or no permission) falls through
+/// to the fallback path; a readable but malformed file resolves to German via
+/// `Lang::from_code`, so it never crashes and never blocks startup.
 #[cfg(feature = "device")]
 fn load_lang() -> crate::i18n::Lang {
     use crate::i18n::Lang;
@@ -272,7 +274,7 @@ fn load_lang() -> crate::i18n::Lang {
         .unwrap_or_default()
 }
 
-/// Persist `lang` to disk (ISSUE_0008).
+/// Persist `lang` to disk.
 ///
 /// Writes to the primary path; if that fails (e.g. `/var/lib/baler` is not
 /// writable) writes to the fallback `/tmp` path. IO failures are logged and

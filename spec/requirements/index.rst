@@ -156,3 +156,36 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    ``aarch64-unknown-linux-musl`` and deployed as two ``Restart=always`` systemd
    units with the daemon ordered first, configured via ``/etc/baler/config.toml``
    with counters stored under ``/var/lib/baler/``.
+
+.. req:: Bilingual operator UI (English and German)
+   :id: REQ_0017
+   :status: open
+   :refines: FEAT_0002
+
+   The ``baler-ui`` shall present every operator-facing string — the main,
+   service, Ethernet, and fault-overlay screens, including the mode, knife, and
+   fault texts driven from Rust — in both English and German, drawn from a single
+   in-binary source of truth per language. German text shall render correctly,
+   including the characters ``Ä Ö Ü ä ö ü ß``. The protocol names EtherCAT and
+   Ethernet shall remain untranslated.
+
+.. req:: PIN-free language toggle on the service screen
+   :id: REQ_0018
+   :status: open
+   :refines: FEAT_0002
+
+   The service screen shall provide a softkey that toggles the display language
+   between English and German without requiring the service PIN, distinct from the
+   PIN-gated Reset Total and network-switch actions. The softkey shall be labelled
+   with the language it switches to, and toggling shall take effect immediately
+   across all screens and issue no control command.
+
+.. req:: Default language and persistence
+   :id: REQ_0019
+   :status: open
+   :refines: FEAT_0002
+
+   The display language shall default to German on a device with no stored
+   selection, and the operator's choice shall persist across power cycles. The
+   selection shall be stored under ``/var/lib/baler/`` and reloaded on boot, so
+   the panel returns in the previously selected language after a restart.

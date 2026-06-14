@@ -256,7 +256,7 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: Default German and persistence of the language choice across power cycles
    :id: ISSUE_0008
-   :status: in-progress
+   :status: done
    :kind: feature
    :links: REQ_0019
 

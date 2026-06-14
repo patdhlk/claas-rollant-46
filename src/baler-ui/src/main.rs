@@ -238,6 +238,63 @@ fn remap_fkey(b: cr1140_hal::input::Button) -> cr1140_hal::input::Button {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Language persistence (ISSUE_0008)
+//
+// Primary path:  /var/lib/baler/language  (survives reboots on the eMMC)
+// Fallback path: /tmp/baler-language      (survives soft reboots within a session)
+// Default:       German (Lang::De)
+//
+// A 2-byte file does not need the temp-file+rename dance used for counters;
+// a plain write with primary/fallback is sufficient for this size.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "device")]
+const LANG_PATH: &str = "/var/lib/baler/language";
+
+#[cfg(feature = "device")]
+const LANG_PATH_FALLBACK: &str = "/tmp/baler-language";
+
+/// Load the persisted language selection from disk (ISSUE_0008).
+///
+/// Tries the primary path first, then the fallback, then returns the default
+/// (German). A missing or malformed file silently falls back to the default.
+#[cfg(feature = "device")]
+fn load_lang() -> crate::i18n::Lang {
+    use crate::i18n::Lang;
+
+    let try_read = |path: &str| -> Option<Lang> {
+        let contents = std::fs::read_to_string(path).ok()?;
+        Some(Lang::from_code(contents.trim()))
+    };
+
+    try_read(LANG_PATH)
+        .or_else(|| try_read(LANG_PATH_FALLBACK))
+        .unwrap_or_default()
+}
+
+/// Persist `lang` to disk (ISSUE_0008).
+///
+/// Writes to the primary path; if that fails (e.g. `/var/lib/baler` is not
+/// writable) writes to the fallback `/tmp` path. IO failures are logged and
+/// silently swallowed — the in-memory toggle still takes effect.
+#[cfg(feature = "device")]
+fn save_lang(lang: crate::i18n::Lang) {
+    let try_write = |path: &str| -> std::io::Result<()> {
+        let p = std::path::Path::new(path);
+        if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(p, lang.as_code())
+    };
+
+    if let Err(e) = try_write(LANG_PATH) {
+        eprintln!("baler-ui: could not write language to {LANG_PATH}: {e}; trying fallback");
+        if let Err(e2) = try_write(LANG_PATH_FALLBACK) {
+            eprintln!("baler-ui: could not write language to {LANG_PATH_FALLBACK}: {e2}; language toggle persists in-memory only");
+        }
+    }
+}
+
 #[cfg(feature = "device")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use crate::platform::{FbPlatform, Xrgb8888};
@@ -317,9 +374,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut service = ServiceState::new();
 
     // Language is mutable at runtime (ISSUE_0007): F3 on the service screen
-    // toggles EN↔DE without a PIN and without any file I/O.
+    // toggles EN↔DE without a PIN. Selection is persisted across power cycles
+    // (ISSUE_0008) via load_lang() / save_lang().
     use crate::i18n::{self, Lang};
-    let mut lang = Lang::default();
+    let mut lang = load_lang();
 
     let ip_text = |s: &StateSnapshot| -> String {
         if s.ip_valid {
@@ -466,9 +524,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Command::ReturnToEthercat
                         });
                     }
-                    // F3: PIN-free language toggle (ISSUE_0007). No backend command.
+                    // F3: PIN-free language toggle (ISSUE_0007). Persist across
+                    // power cycles (ISSUE_0008). No backend command.
                     Button::F3 => {
                         lang = lang.other();
+                        save_lang(lang);
                     }
                     Button::F6 => {
                         service.reset();

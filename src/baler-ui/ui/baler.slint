@@ -43,6 +43,9 @@ export struct I18n {
     // Fault screen
     fault-title: string,
     fault-detail: string,
+
+    // Language toggle label: the TARGET language's endonym (shown on service F3)
+    sk-language: string,
 }
 
 global Theme {
@@ -305,7 +308,7 @@ export component AppWindow inherits Window {
                 alignment: space-between;
                 Softkey { key: "F1"; label: root.tr.sk-reset-total; }
                 Softkey { key: "F2"; label: root.ethernet-selected ? root.tr.sk-use-ethercat : root.tr.sk-use-ethernet; }
-                Softkey { key: "F3"; label: ""; enabled: false; }
+                Softkey { key: "F3"; label: root.tr.sk-language; }
                 Softkey { key: "F4"; label: ""; enabled: false; }
                 Softkey { key: "F5"; label: ""; enabled: false; }
                 Softkey { key: "F6"; label: root.tr.sk-back; }

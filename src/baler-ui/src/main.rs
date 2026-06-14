@@ -316,27 +316,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut nav = Nav::Main;
     let mut service = ServiceState::new();
 
-    // Language is fixed to the compile-time default (German) in this slice.
-    // The operator toggle and persistence come in a later task (ISSUE_0007).
+    // Language is mutable at runtime (ISSUE_0007): F3 on the service screen
+    // toggles EN↔DE without a PIN and without any file I/O.
     use crate::i18n::{self, Lang};
-    let lang = Lang::default();
-    let strings = i18n::table(lang);
+    let mut lang = Lang::default();
 
-    let mode_text = |m: Mode| -> &'static str {
-        match m {
-            Mode::Initializing => strings.mode_initialising,
-            Mode::Operational => strings.mode_operational,
-            Mode::Fault => strings.mode_fault,
-            Mode::Ethernet => strings.mode_ethernet,
-        }
-    };
-    let knife_text = |k: KnifePos| -> &'static str {
-        match k {
-            KnifePos::Unknown => strings.knife_unknown,
-            KnifePos::In => strings.knife_in,
-            KnifePos::Out => strings.knife_out,
-        }
-    };
     let ip_text = |s: &StateSnapshot| -> String {
         if s.ip_valid {
             format!("{}.{}.{}.{}", s.ip[0], s.ip[1], s.ip[2], s.ip[3])
@@ -345,65 +329,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Build the I18n struct once from the string table and set it on the UI.
-    // `lang` is constant for this slice so this only needs to run once.
-    let tr = I18n {
-        title: strings.title.into(),
-        bale_full_banner: strings.bale_full_banner.into(),
-        session_caption: strings.session_caption.into(),
-        total_caption: strings.total_caption.into(),
-        knife_caption: strings.knife_caption.into(),
-        sk_wrap: strings.sk_wrap.into(),
-        sk_wrapping: strings.sk_wrapping.into(),
-        sk_knife_toggle: strings.sk_knife_toggle.into(),
-        sk_knife_active: strings.sk_knife_active.into(),
-        sk_reset_session: strings.sk_reset_session.into(),
-        sk_service: strings.sk_service.into(),
-        service_title: strings.service_title.into(),
-        enter_pin: strings.enter_pin.into(),
-        pin_hint: strings.pin_hint.into(),
-        network_caption: strings.network_caption.into(),
-        sk_reset_total: strings.sk_reset_total.into(),
-        sk_use_ethernet: strings.sk_use_ethernet.into(),
-        sk_use_ethercat: strings.sk_use_ethercat.into(),
-        sk_back: strings.sk_back.into(),
-        eth_title: strings.eth_title.into(),
-        eth_offline: strings.eth_offline.into(),
-        static_ip_caption: strings.static_ip_caption.into(),
-        sk_return_ethercat: strings.sk_return_ethercat.into(),
-        fault_title: strings.fault_title.into(),
-        fault_detail: strings.fault_detail.into(),
-    };
-    ui.set_tr(tr);
-
-    let push_view = |ui: &AppWindow, nav: Nav, snap: &StateSnapshot, service: &ServiceState| {
-        let slint_screen = match nav {
-            Nav::Main => Screen::Main,
-            Nav::Service => Screen::Service,
-            Nav::Ethernet => Screen::Ethernet,
-            Nav::Fault => Screen::Fault,
+    // push_view resolves all language-dependent text from `lang` each call so
+    // that a language toggle is immediately reflected across ALL screens.
+    let push_view =
+        |ui: &AppWindow, nav: Nav, snap: &StateSnapshot, service: &ServiceState, lang: Lang| {
+            let strings = i18n::table(lang);
+            let tr = I18n {
+                title: strings.title.into(),
+                bale_full_banner: strings.bale_full_banner.into(),
+                session_caption: strings.session_caption.into(),
+                total_caption: strings.total_caption.into(),
+                knife_caption: strings.knife_caption.into(),
+                sk_wrap: strings.sk_wrap.into(),
+                sk_wrapping: strings.sk_wrapping.into(),
+                sk_knife_toggle: strings.sk_knife_toggle.into(),
+                sk_knife_active: strings.sk_knife_active.into(),
+                sk_reset_session: strings.sk_reset_session.into(),
+                sk_service: strings.sk_service.into(),
+                service_title: strings.service_title.into(),
+                enter_pin: strings.enter_pin.into(),
+                pin_hint: strings.pin_hint.into(),
+                network_caption: strings.network_caption.into(),
+                sk_reset_total: strings.sk_reset_total.into(),
+                sk_use_ethernet: strings.sk_use_ethernet.into(),
+                sk_use_ethercat: strings.sk_use_ethercat.into(),
+                sk_back: strings.sk_back.into(),
+                eth_title: strings.eth_title.into(),
+                eth_offline: strings.eth_offline.into(),
+                static_ip_caption: strings.static_ip_caption.into(),
+                sk_return_ethercat: strings.sk_return_ethercat.into(),
+                fault_title: strings.fault_title.into(),
+                fault_detail: strings.fault_detail.into(),
+                // Label shows the TARGET language so the operator knows what
+                // pressing F3 will switch to.
+                sk_language: i18n::table(lang.other()).language_name.into(),
+            };
+            ui.set_tr(tr);
+            let slint_screen = match nav {
+                Nav::Main => Screen::Main,
+                Nav::Service => Screen::Service,
+                Nav::Ethernet => Screen::Ethernet,
+                Nav::Fault => Screen::Fault,
+            };
+            ui.set_screen(slint_screen);
+            let mode_text = match snap.mode {
+                Mode::Initializing => strings.mode_initialising,
+                Mode::Operational => strings.mode_operational,
+                Mode::Fault => strings.mode_fault,
+                Mode::Ethernet => strings.mode_ethernet,
+            };
+            ui.set_mode_text(mode_text.into());
+            ui.set_bale_full(snap.bale_full);
+            let knife_text = match snap.knife {
+                KnifePos::Unknown => strings.knife_unknown,
+                KnifePos::In => strings.knife_in,
+                KnifePos::Out => strings.knife_out,
+            };
+            ui.set_knife_text(knife_text.into());
+            ui.set_wrap_armed(snap.wrap_armed);
+            ui.set_wrap_active(snap.wrap_active);
+            ui.set_knife_active(snap.knife_active);
+            ui.set_session_text(snap.session.to_string().into());
+            ui.set_total_text(snap.total.to_string().into());
+            ui.set_ethercat_healthy(snap.mode == Mode::Operational);
+            ui.set_ip_text(ip_text(snap).into());
+            ui.set_pin_display(service.display().into());
+            ui.set_ethernet_selected(service.ethernet_selected);
+            ui.set_fault_text(strings.fault_link_lost.into());
         };
-        ui.set_screen(slint_screen);
-        ui.set_mode_text(mode_text(snap.mode).into());
-        ui.set_bale_full(snap.bale_full);
-        ui.set_knife_text(knife_text(snap.knife).into());
-        ui.set_wrap_armed(snap.wrap_armed);
-        ui.set_wrap_active(snap.wrap_active);
-        ui.set_knife_active(snap.knife_active);
-        ui.set_session_text(snap.session.to_string().into());
-        ui.set_total_text(snap.total.to_string().into());
-        ui.set_ethercat_healthy(snap.mode == Mode::Operational);
-        ui.set_ip_text(ip_text(snap).into());
-        ui.set_pin_display(service.display().into());
-        ui.set_ethernet_selected(service.ethernet_selected);
-        ui.set_fault_text(strings.fault_link_lost.into());
-    };
 
-    push_view(&ui, nav, &snap, &service);
+    push_view(&ui, nav, &snap, &service, lang);
 
     let mut led = LedBeacon::new();
     let frame_period = Duration::from_millis(16);
-    let mut prev_view: Option<(Nav, StateSnapshot, [u8; 4], usize, bool)> = None;
+    let mut prev_view: Option<(Nav, StateSnapshot, [u8; 4], usize, bool, Lang)> = None;
 
     loop {
         slint::platform::update_timers_and_animations();
@@ -465,6 +464,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Command::ReturnToEthercat
                         });
                     }
+                    // F3: PIN-free language toggle (ISSUE_0007). No backend command.
+                    Button::F3 => {
+                        lang = lang.other();
+                    }
                     Button::F6 => {
                         service.reset();
                         nav = Nav::Main;
@@ -481,9 +484,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let view_key = (nav, snap, service.pin, service.cursor, service.ethernet_selected);
+        let view_key = (nav, snap, service.pin, service.cursor, service.ethernet_selected, lang);
         if prev_view.as_ref() != Some(&view_key) {
-            push_view(&ui, nav, &snap, &service);
+            push_view(&ui, nav, &snap, &service, lang);
             prev_view = Some(view_key);
         }
 

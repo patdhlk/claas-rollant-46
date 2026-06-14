@@ -52,6 +52,19 @@ impl Lang {
             _ => Lang::default(),
         }
     }
+
+    /// Return the other language (En↔De toggle).
+    ///
+    /// ```text
+    /// Lang::En.other() == Lang::De
+    /// Lang::De.other() == Lang::En
+    /// ```
+    pub fn other(self) -> Lang {
+        match self {
+            Lang::En => Lang::De,
+            Lang::De => Lang::En,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +265,22 @@ mod tests {
     #[test]
     fn lang_default_is_de() {
         assert_eq!(Lang::default(), Lang::De);
+    }
+
+    #[test]
+    fn lang_other_en_gives_de() {
+        assert_eq!(Lang::En.other(), Lang::De);
+    }
+
+    #[test]
+    fn lang_other_de_gives_en() {
+        assert_eq!(Lang::De.other(), Lang::En);
+    }
+
+    #[test]
+    fn lang_other_is_involution() {
+        assert_eq!(Lang::En.other().other(), Lang::En);
+        assert_eq!(Lang::De.other().other(), Lang::De);
     }
 
     // -----------------------------------------------------------------------

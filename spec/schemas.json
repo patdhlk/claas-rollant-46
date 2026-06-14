@@ -1,0 +1,20 @@
+{
+  "schemas": [
+    {
+      "id": "issue-status",
+      "message": "issue :status: must be a triage state: needs-triage | needs-info | ready-for-agent | ready-for-human | in-progress | done | wontfix",
+      "select": { "properties": { "type": { "const": "issue" } } },
+      "validate": {
+        "local": {
+          "properties": {
+            "status": {
+              "enum": ["needs-triage", "needs-info", "ready-for-agent",
+                       "ready-for-human", "in-progress", "done", "wontfix"]
+            }
+          },
+          "required": ["status"]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+"$schema" = "https://ubcode.useblocks.com/ubproject.schema.json"
+
+[project]
+name = "claas-rollant-46"
+srcdir = "spec"
+
+[needs]
+id_required = true
+
+[needs.fields.kind]
+description = "Issue kind: bug | feature | improvement | chore | question"
+nullable = true
+schema = { type = "string", enum = ["bug", "feature", "improvement", "chore", "question"] }
+
+[needs.fields.github]
+description = "GitHub issue number this need is tracked by (github backend only)"
+nullable = true
+schema = { type = "string" }
+
+[[needs.types]]
+directive = "req"
+title = "Requirement"
+prefix = "REQ_"
+color = "#BFD8D2"
+style = "node"
+
+[[needs.types]]
+directive = "arch-decision"
+title = "Architecture Decision"
+prefix = "ADR_"
+color = "#A6C8E0"
+style = "node"
+
+[[needs.types]]
+directive = "term"
+title = "Glossary Term"
+prefix = "GLOSS_"
+color = "#D8D8D8"
+style = "node"
+
+[[needs.types]]
+directive = "feat"
+title = "Feature"
+prefix = "FEAT_"
+color = "#C8E0A6"
+style = "node"
+
+[[needs.types]]
+directive = "issue"
+title = "Issue"
+prefix = "ISSUE_"
+color = "#E8C8A0"
+style = "node"
+
+[needs.links.satisfies]
+incoming = "is satisfied by"
+outgoing = "satisfies"
+
+[needs.links.refines]
+incoming = "is refined by"
+outgoing = "refines"
+
+[needs.links.implements]
+incoming = "is implemented by"
+outgoing = "implements"
+
+[needs.links.verifies]
+incoming = "is verified by"
+outgoing = "verifies"
+
+[tool.patdhlk-skills]
+issue_backend = "sphinx-needs"
+spec_dir = "spec"
+builder = "ubc"
+issue_doc = "spec/issues/index.rst"
+features_dir = "spec/features"
+decisions_doc = "spec/architecture/index.rst"
+
+[tool.patdhlk-skills.roles]
+issue = "issue"
+feature = "feat"
+requirement = "req"
+decision = "arch-decision"
+term = "term"
+
+[tool.patdhlk-skills.lint.required_sections]
+arch-decision = ["Context", "Decision", "Consequences"]
+
+[tool.patdhlk-skills.lint.nontrivial_body]
+issue = 200

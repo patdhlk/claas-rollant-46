@@ -1,0 +1,7 @@
+.venv/
+spec/_build/
+__pycache__/
+*.pyc
+target/
+# deploy credentials — never commit (open-source repo)
+src/deploy/deploy.env

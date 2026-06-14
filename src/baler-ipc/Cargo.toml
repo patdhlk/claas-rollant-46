@@ -1,0 +1,20 @@
+[package]
+name = "baler-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Off by default so the macOS host build never pulls in iceoryx2.
+# Enable on the aarch64-unknown-linux-musl target to compile the transport.
+default = []
+hardware = ["dep:iceoryx2"]
+
+[dependencies]
+# Optional: only compiled when the `hardware` feature is on (taktora pins a
+# patched 0.8 via [patch] in the workspace / target manifest).
+# Built via `cross` (Docker) for the gnu target: its image provides clang + an
+# aarch64 sysroot so iceoryx2's bindgen path works. (zig/musl cannot build
+# iceoryx2 0.8 — bindgen needs clang; libc_platform has a cpu_set_t bug.)
+iceoryx2 = { version = "0.8", optional = true, default-features = false }

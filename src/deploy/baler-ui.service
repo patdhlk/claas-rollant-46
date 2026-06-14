@@ -1,0 +1,16 @@
+[Unit]
+Description=Baler operator panel (baler-ui)
+# Take over the framebuffer from the stock demo.
+Conflicts=cr1140-app.service
+After=cr1140-app.service systemd-user-sessions.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/baler-ui
+Restart=always
+RestartSec=2
+# Needs /dev/fb0 (video), /dev/input/* (keypad), LED + counter sysfs/files.
+# Runs as root for simplicity on this single-purpose device.
+
+[Install]
+WantedBy=multi-user.target

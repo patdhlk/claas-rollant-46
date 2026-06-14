@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "skills": {
+    "decide": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/decide/SKILL.md",
+      "computedHash": "cec584ca169623af75d52c5c29157bdf222620c7f13502309f691b8578b5979b"
+    },
+    "diagnose": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/diagnose/SKILL.md",
+      "computedHash": "72d67f586ed3f4773ba56aeeea64b77632bd356c29b0394c7185772ab9835eaf"
+    },
+    "grill-me": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/grill-me/SKILL.md",
+      "computedHash": "10eaa9da8163170040bce0aacb45c3ff9b633512fc4480fd2bb1053fb56e4c1b"
+    },
+    "grill-with-docs": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/grill-with-docs/SKILL.md",
+      "computedHash": "f97ede4398580d567a7aca030c3ac9d51b4eb091b53b016d54c2ceb5bb5dc967"
+    },
+    "prototype": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/prototype/SKILL.md",
+      "computedHash": "033b3995865424b96ea30614254f2d40f42648a9cab07af4a0c2f6b074577351"
+    },
+    "qa": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/qa/SKILL.md",
+      "computedHash": "2e9abf801c1087a7339554f7b416ff6cccb8daa5006eb6848717585370bb0f21"
+    },
+    "review": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/review/SKILL.md",
+      "computedHash": "eb4d362004ea84875d8a7ca2dbd55fcda8adf741c4748863dca19d23743c8d81"
+    },
+    "setup-patdhlk-skills": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/setup-patdhlk-skills/SKILL.md",
+      "computedHash": "94451b88e89c249f97fbcf74e2e5a3f25338cc00e603610f904a1b10591fbca0"
+    },
+    "tdd": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/tdd/SKILL.md",
+      "computedHash": "1fe10d507e5dbe377e628f9284b4fda74932fa9cd0c87d47b01906c20fe0ae01"
+    },
+    "to-issues": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/to-issues/SKILL.md",
+      "computedHash": "5b2345740a0542f438126bee8224ffe61106664b14f5dc6f38696e4c00efd01c"
+    },
+    "to-prd": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/to-prd/SKILL.md",
+      "computedHash": "e5665b56007feaf595fa5579249e4014c36a0d29a54493b87e06f4d1cbbf5ebe"
+    },
+    "triage": {
+      "source": "patdhlk/skills",
+      "sourceType": "github",
+      "skillPath": "skills/triage/SKILL.md",
+      "computedHash": "ee70362ef80168001572805a4f72166977e18005d15599a1d259f21fe5b67c26"
+    }
+  }
+}

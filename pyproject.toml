@@ -1,0 +1,13 @@
+[project]
+name = "claas-rollant-46"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "furo>=2025.12.19",
+    "sphinx>=9.0.4",
+    "sphinx-autobuild>=2025.8.25",
+    "sphinx-needs>=8,<9",
+]
+
+[tool.uv]
+package = false

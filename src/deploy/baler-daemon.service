@@ -1,0 +1,16 @@
+[Unit]
+Description=Baler control daemon (baler-daemon)
+After=systemd-user-sessions.service
+Before=baler-ui.service
+
+[Service]
+Type=simple
+# Demo/safe config: Sim bus + Sim network + real /dev/watchdog + iceoryx2.
+# Never touches eth0 and needs no coupler. Swap the binary for the full
+# `--features hardware` build only with the WAGO coupler connected.
+ExecStart=/usr/local/bin/baler-daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

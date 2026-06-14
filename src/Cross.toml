@@ -1,0 +1,6 @@
+# slint-build embeds a system font for the software renderer; the minimal cross
+# image has none, so install one (and fontconfig) into the build container.
+[build]
+pre-build = [
+    "apt-get update && apt-get install --assume-yes fonts-dejavu-core fontconfig",
+]

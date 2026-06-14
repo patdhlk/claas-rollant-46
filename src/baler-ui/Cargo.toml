@@ -1,0 +1,44 @@
+[package]
+name = "baler-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+# Standalone framebuffer UI: Slint + cr1140-hal + the real baler-core control
+# logic running in-process. No iceoryx2, no daemon — builds to static aarch64
+# musl and runs by itself on the panel. This is the on-device demo.
+device = ["dep:slint", "dep:cr1140-hal", "dep:baler-core", "dep:slint-build"]
+
+# Split-process build: same UI, but state comes from baler-daemon over iceoryx2
+# instead of the in-process logic. (iceoryx2 0.8 does not yet cross-compile to
+# musl — see notes; use a glibc target for this.)
+transport = ["device", "baler-ipc/hardware"]
+
+# Alias for the full split-process device build.
+hardware = ["transport"]
+
+[dependencies]
+baler-ipc = { path = "../baler-ipc" }
+# In-process control logic for the standalone `device` build.
+baler-core = { path = "../baler-core", optional = true }
+
+# Slint with NO system backend and NO std font loading — pure-Rust so it
+# cross-compiles to aarch64. Fonts embedded at build time (build.rs).
+slint = { version = "1.12", default-features = false, optional = true, features = [
+    "compat-1-2",
+    "unsafe-single-threaded",
+    "libm",
+    "renderer-software",
+] }
+
+# Raw hardware: FbDisplay (fbdev), ButtonReader (evdev), set_led_typed (sysfs).
+cr1140-hal = { git = "https://github.com/UpTux/ifm-cr1140", optional = true }
+
+[build-dependencies]
+# Enabled by the `device` feature; build.rs only references it under
+# `#[cfg(feature = "device")]`, so the host build neither fetches nor runs it.
+slint-build = { version = "1.12", optional = true }

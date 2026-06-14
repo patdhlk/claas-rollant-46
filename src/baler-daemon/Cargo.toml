@@ -1,0 +1,48 @@
+[package]
+name = "baler-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Off by default: the host build uses the Sim* ports and stays dependency-light.
+default = []
+
+# Granular edges so a safe on-device demo can run WITHOUT taktora/EtherCAT:
+#   --features transport,watchdog-hw  → Sim bus/net + real watchdog + iceoryx2,
+#   publishes live state to baler-ui without ever touching eth0 or a coupler.
+transport = ["baler-ipc/hardware"]
+ethercat = [
+    "dep:taktora-executor",
+    "dep:taktora-connector-core",
+    "dep:taktora-connector-host",
+    "dep:taktora-connector-transport-iox",
+    "dep:taktora-connector-ethercat",
+    "dep:serde",
+    "dep:serde_json",
+]
+watchdog-hw = ["dep:nix", "dep:libc", "dep:log"]
+netmode-hw = []
+
+# The full device build (coupler connected).
+hardware = ["transport", "ethercat", "watchdog-hw", "netmode-hw"]
+
+[dependencies]
+baler-core = { path = "../baler-core" }
+baler-ipc = { path = "../baler-ipc" }
+
+# --- optional, compiled only under the features above ---
+# taktora ethercat-wago connector stack (REQ_0015). Pin to a rev for repro.
+taktora-executor = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
+taktora-connector-core = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
+taktora-connector-host = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
+taktora-connector-transport-iox = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
+taktora-connector-ethercat = { git = "https://github.com/patdhlk/taktora", branch = "main", features = ["bus-integration"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+# /dev/watchdog ioctl (REQ_0010)
+nix = { version = "0.29", optional = true, default-features = false, features = ["ioctl"] }
+libc = { version = "0.2", optional = true }
+log = { version = "0.4", optional = true }

@@ -323,20 +323,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let strings = i18n::table(lang);
 
     let mode_text = |m: Mode| -> &'static str {
-        let s = i18n::table(lang);
         match m {
-            Mode::Initializing => s.mode_initialising,
-            Mode::Operational => s.mode_operational,
-            Mode::Fault => s.mode_fault,
-            Mode::Ethernet => s.mode_ethernet,
+            Mode::Initializing => strings.mode_initialising,
+            Mode::Operational => strings.mode_operational,
+            Mode::Fault => strings.mode_fault,
+            Mode::Ethernet => strings.mode_ethernet,
         }
     };
     let knife_text = |k: KnifePos| -> &'static str {
-        let s = i18n::table(lang);
         match k {
-            KnifePos::Unknown => s.knife_unknown,
-            KnifePos::In => s.knife_in,
-            KnifePos::Out => s.knife_out,
+            KnifePos::Unknown => strings.knife_unknown,
+            KnifePos::In => strings.knife_in,
+            KnifePos::Out => strings.knife_out,
         }
     };
     let ip_text = |s: &StateSnapshot| -> String {
@@ -398,7 +396,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_ip_text(ip_text(snap).into());
         ui.set_pin_display(service.display().into());
         ui.set_ethernet_selected(service.ethernet_selected);
-        ui.set_fault_text(i18n::table(lang).fault_link_lost.into());
+        ui.set_fault_text(strings.fault_link_lost.into());
     };
 
     push_view(&ui, nav, &snap, &service);

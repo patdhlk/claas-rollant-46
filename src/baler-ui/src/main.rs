@@ -217,6 +217,23 @@ fn make_backend() -> Result<IpcBackend, Box<dyn std::error::Error>> {
     IpcBackend::new()
 }
 
+/// Map a physically-pressed function key to the logical softkey under its
+/// on-screen label. The CR1140 keys are arranged F6,F4,F2,F1,F3,F5 left-to-right
+/// while the UI labels them F1..F6 left-to-right. Non-function keys pass through.
+#[cfg(feature = "device")]
+fn remap_fkey(b: cr1140_hal::input::Button) -> cr1140_hal::input::Button {
+    use cr1140_hal::input::Button::*;
+    match b {
+        F1 => F4,
+        F2 => F3,
+        F3 => F5,
+        F4 => F2,
+        F5 => F6,
+        F6 => F1,
+        other => other,
+    }
+}
+
 #[cfg(feature = "device")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use crate::platform::{FbPlatform, Xrgb8888};
@@ -366,6 +383,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ButtonEvent::Pressed(btn) = ev else {
                 continue;
             };
+            // The CR1140 function keys are physically arranged F6,F4,F2,F1,F3,F5
+            // left-to-right, but the UI labels softkeys F1..F6 left-to-right.
+            // Remap the physical key to the logical softkey under its label so
+            // the on-screen F-numbers stay correct. Arrows/Enter pass through.
+            let btn = remap_fkey(btn);
             match nav {
                 Nav::Main => match btn {
                     Button::F1 if snap.wrap_armed => backend.command(Command::Wrap),

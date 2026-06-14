@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Internationalisation string table for the baler panel UI (ISSUE_0005).
 //!
-//! This module is the single in-binary source of truth for every static UI
-//! label in English and German.  It is pure Rust — no Slint, no filesystem
-//! access — and therefore compiles and tests on the host without the `device`
-//! feature.
+//! This module holds every static UI label in English and German in one place
+//! per language — the intended single source of truth for the UI's text. The
+//! Slint view and the language-aware mode/knife/fault mappers are wired to it in
+//! ISSUE_0006; until then `main.rs` still carries the original English literals.
+//! It is pure Rust — no Slint, no filesystem access — and therefore compiles and
+//! tests on the host without the `device` feature.
 
 // ---------------------------------------------------------------------------
 // Language discriminant
@@ -23,10 +25,9 @@ pub enum Lang {
 impl Lang {
     /// Return the ISO 639-1 language code for this language.
     ///
-    /// ```
-    /// use baler_ui::i18n::Lang;
-    /// assert_eq!(Lang::En.as_code(), "en");
-    /// assert_eq!(Lang::De.as_code(), "de");
+    /// ```text
+    /// Lang::En.as_code() == "en"
+    /// Lang::De.as_code() == "de"
     /// ```
     pub fn as_code(self) -> &'static str {
         match self {
@@ -38,12 +39,11 @@ impl Lang {
     /// Parse a language code, falling back to the default ([`Lang::De`]) for
     /// any unrecognised code.
     ///
-    /// ```
-    /// use baler_ui::i18n::Lang;
-    /// assert_eq!(Lang::from_code("en"), Lang::En);
-    /// assert_eq!(Lang::from_code("de"), Lang::De);
-    /// assert_eq!(Lang::from_code("fr"), Lang::De);   // unknown → default
-    /// assert_eq!(Lang::from_code(""),   Lang::De);   // empty   → default
+    /// ```text
+    /// Lang::from_code("en") == Lang::En
+    /// Lang::from_code("de") == Lang::De
+    /// Lang::from_code("fr") == Lang::De   // unknown → default
+    /// Lang::from_code("")   == Lang::De   // empty   → default
     /// ```
     pub fn from_code(code: &str) -> Lang {
         match code {
@@ -257,21 +257,16 @@ mod tests {
     // -----------------------------------------------------------------------
     // String table completeness
     //
-    // Strategy: an accessor-closure slice drives the completeness check.
-    // Adding a new field to `Strings` WITHOUT adding a closure here causes a
-    // compile error only if the field is referenced elsewhere, but the naming
-    // convention below makes that highly likely to be caught in review.
-    // More importantly, the slice is the definitive list: every closure must
-    // exist for the test to compile at all, so a missing closure = compile
-    // error.  A newly-added field that is *not* in this slice will not be
-    // caught automatically at compile time, but the review comment in the
-    // test documents the obligation explicitly, and the exhaustive struct
-    // literal in EN/DE (no `..` spread) would fail to compile if a field were
-    // added to the struct without being initialised in both constants.
+    // Strategy: an accessor-closure slice drives the non-empty completeness
+    // check. The guard that matters most is that `Strings` uses named-field
+    // initialisation without `..default()`, so a newly-added field MUST appear
+    // in both `EN` and `DE` or the crate will not compile at all.
     //
-    // The guard that matters most: `Strings` uses named-field initialisation
-    // without `..default()`, so every field must be present in BOTH `EN` and
-    // `DE` or the crate will not compile at all.
+    // A newly-added field will not be caught by the ACCESSORS slice specifically
+    // (it would still need adding here and to `EXPECTED_FIELD_COUNT` by hand),
+    // but the exhaustive struct literal already guarantees it exists in both
+    // tables. The `accessor_count_matches_expectation` test then catches the
+    // slice drifting out of sync, prompting the author to add the new accessor.
     // -----------------------------------------------------------------------
 
     type Accessor = fn(&Strings) -> &'static str;

@@ -316,6 +316,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut nav = Nav::Main;
     let mut service = ServiceState::new();
 
+    // TODO ISSUE_0006: drive these from i18n::table(lang) (the mode_*/knife_*
+    // and fault_link_lost fields) instead of hardcoded English, once language
+    // selection is wired in.
     let mode_text = |m: Mode| -> &'static str {
         match m {
             Mode::Initializing => "INITIALISING",
@@ -359,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_ip_text(ip_text(snap).into());
         ui.set_pin_display(service.display().into());
         ui.set_ethernet_selected(service.ethernet_selected);
-        ui.set_fault_text("ETHERCAT LINK LOST".into());
+        ui.set_fault_text("ETHERCAT LINK LOST".into()); // TODO ISSUE_0006: i18n fault_link_lost
     };
 
     push_view(&ui, nav, &snap, &service);

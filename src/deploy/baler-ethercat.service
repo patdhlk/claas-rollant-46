@@ -1,0 +1,33 @@
+[Unit]
+Description=Baler control daemon — EtherCAT/WAGO coupler (ISSUE_0009)
+# Order after the network device exists; the daemon itself then waits for eth0
+# carrier before scanning (ethercrab enumerates the bus only once).
+After=systemd-user-sessions.service network.target sys-subsystem-net-devices-eth0.device
+Wants=network.target
+# restart-until-first-Up must never hit the start-rate limiter and give up: the
+# daemon self-exits if the bus is not Up within its deadline, and that may repeat
+# indefinitely until the coupler is present (ISSUE_0009).
+StartLimitIntervalSec=0
+# This and the Sim `baler-daemon` both own the iceoryx2 state service, so only
+# one may run at a time. Starting this stops baler-daemon automatically.
+Conflicts=baler-daemon.service
+Before=baler-ui.service
+
+[Service]
+Type=simple
+# Full `--features hardware` build: real WAGO 750-354 connector on eth0 (taktora
+# executor on the main thread), real /dev/watchdog, real `ip`-based NIC switch,
+# iceoryx2 to baler-ui. Needs CAP_NET_RAW + CAP_NET_ADMIN — root has both.
+# Set RUST_LOG=ethercrab=debug for verbose bring-up tracing.
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/baler-ethercat
+Restart=always
+RestartSec=2
+
+# Enabled on boot (see deploy-ethercat.sh): EtherCAT is the device's normal run
+# mode, so a restart brings the WAGO bus up automatically. On a single-NIC box you
+# have no SSH while the coupler is on eth0 — switch to Ethernet maintenance mode
+# from the UI (the EnterEthernet softkey raises the static IP) to reconnect, or
+# reboot with eth0 on the LAN.
+[Install]
+WantedBy=multi-user.target

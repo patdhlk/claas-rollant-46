@@ -165,7 +165,7 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: baler-daemon EtherCAT never reaches OP — run the taktora executor as the main loop
    :id: ISSUE_0009
-   :status: ready-for-agent
+   :status: done
    :kind: bug
    :links: REQ_0015
 
@@ -229,3 +229,57 @@ done | wontfix. Edit status in place — git history is the audit trail.
    - [ ] Validated on-device with a captured ``-> Up`` + I/O log.
 
    **Blocked by.** None — root cause confirmed; can start immediately.
+
+   **Resolution (2026-06-15).** Fixed and validated on-device (reached ``Up`` in
+   ~3 s, DI→DO mirror confirmed; capture in ``bringup-logs/``). Two layers:
+
+   - *Execution model* (the filed bug): extracted the control cycle into
+     ``Control::step`` (``baler-daemon/src/control.rs``, unit-tested) and split the
+     run paths — ``run`` keeps the sim loop, ``run_ethercat`` builds the taktora
+     ``Executor``, registers the WAGO connector + health pump via
+     ``ethercat_io::register``, and runs ``exec.run()`` on the **main thread** with
+     the 10 ms control cycle as an executor item. The background-thread executor is
+     gone. iceoryx2 ports are ``!Send`` (internal ``Rc``), so the transport
+     publisher/subscriber run on a dedicated relay thread bridged by ``Send`` mpsc
+     channels rather than inside the (``Send``) executor item.
+   - *Boot link-race* (surfaced once the diagnostic ``BALER_DIAG_EXIT_SECS`` shim
+     was dropped): ethercrab enumerates the bus once and the daemon's scan fired
+     before ``eth0`` had carrier (``ENETDOWN``), wedging it ``Down`` forever.
+     ``run_ethercat`` now waits for the link (carrier) before constructing the
+     connector, and re-introduces a (non-diagnostic) restart-until-first-``Up``
+     backstop: if not ``Up`` within 12 s it exits non-zero so systemd respawns a
+     fresh scan (unit sets ``StartLimitIntervalSec=0``).
+
+   Deploy: ``src/deploy/deploy-ethercat.sh`` + ``baler-ethercat.service`` (enabled
+   on boot; EtherCAT is the device's normal run mode).
+
+.. issue:: EtherCAT connector keeps flapping recovery in Ethernet/maintenance mode
+   :id: ISSUE_0010
+   :status: needs-triage
+   :kind: improvement
+   :links: REQ_0009, ISSUE_0009
+
+   **What.** Follow-up from ISSUE_0009. The ``netmode-hw`` switch
+   (``NetworkController::enter_ethernet`` / ``enter_ethercat``,
+   ``baler-daemon/src/network_mode.rs``) is purely IP-level: it brings the static
+   IP up/down but does **not** stop or recreate the taktora EtherCAT master. So in
+   Ethernet maintenance mode (and any time the coupler is absent) the connector
+   keeps running on ``eth0`` and flaps ``Connecting -> Degraded`` on every recovery
+   attempt, logging each transition. Observed on-device 2026-06-15 after switching
+   back to Ethernet: repeated ``recover failed: ethercrab: Timeout(Pdu)`` (with
+   exponential backoff, so bounded — but noisy, and the raw socket stays active on
+   the maintenance link).
+
+   **Why it matters.** REQ_0009 and the ``ports.rs`` doc both state the intent that
+   "the EtherCAT master is stopped/recreated by the daemon around these calls" —
+   currently unimplemented. A flapping master on the maintenance NIC is untidy and
+   could interfere with maintenance traffic; it also means EtherCAT health while in
+   Ethernet mode is meaningless noise.
+
+   **Possible fix.** On ``SwitchToEthernet``, pause/stop the executor's connector
+   driving (or drop + later rebuild the connector) so the raw socket is released;
+   on ``SwitchToEthercat`` (or reboot), recreate it. Needs a clean way to
+   stop/restart just the connector within the running executor, or to gate the
+   control item so it stops pumping the bus while in Ethernet mode.
+
+   **Blocked by.** None.

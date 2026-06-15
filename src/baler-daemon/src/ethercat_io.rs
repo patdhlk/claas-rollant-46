@@ -1,23 +1,24 @@
-//! Real `BusIo` implementation (REQ_0015): the taktora ethercat-wago connector
-//! for a WAGO 750-354 coupler (+750-430 8 DI, +750-530 8 DO).
+//! Real EtherCAT IO (REQ_0015): the taktora ethercat-wago connector for a
+//! WAGO 750-354 coupler (+750-430 8 DI, +750-530 8 DO).
 //!
-//! Behind the `hardware` cargo feature (gated at the `mod` site in main.rs).
+//! Behind the `ethercat` cargo feature (gated at the `mod` site in main.rs).
 //!
-//! # Architecture: bridging a cyclic framework to a synchronous scan loop
+//! # Architecture: the connector IS the main loop (ISSUE_0009)
 //!
 //! taktora is cyclic: the ethercat connector's PDI exchange is pumped by
 //! executor items registered via `Connector::register_with`, which only run
-//! while `Executor::run()` is live. There is no public per-cycle `step()` on the
-//! `Connector` trait to drive a single cycle by hand. So we run the taktora
-//! `Executor` on a dedicated background thread; the daemon's synchronous scan
-//! loop talks to the running connector through the iceoryx2
-//! `ChannelReader`/`ChannelWriter` handles plus a shared health snapshot kept
-//! current by a health-pump item — mirroring the upstream
-//! `examples/ethercat-wago-coupler`.
+//! while `Executor::run()` is live. Mirroring the upstream
+//! `examples/ethercat-wago-coupler`, the daemon builds the connector here,
+//! registers it (and a health pump) into the caller's [`Executor`] via
+//! [`register`], and the caller runs that executor as its **main loop** —
+//! adding the 10 ms control cycle as another executor item that reads/writes
+//! the WAGO process image through the returned [`WagoBus`]. The earlier
+//! background-thread `exec.run()` never scheduled its interval items, so
+//! bring-up never advanced past the construction-time frame; running the
+//! executor on the main thread is the fix.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use taktora_connector_core::{ChannelDescriptor, ConnectorHealthKind, PayloadCodec};
@@ -29,7 +30,7 @@ use taktora_connector_host::Connector;
 use taktora_connector_transport_iox::{ChannelReader, ChannelWriter};
 use taktora_executor::{item_with_triggers, ControlFlow, ExecuteResult, Executor, ExecutorError};
 
-use crate::ports::{BusIo, Inputs, Outputs};
+use crate::ports::{Inputs, Outputs};
 
 // --- Hardware constants — WAGO 750-354 + 750-430 (DI) + 750-530 (DO). --------
 
@@ -154,7 +155,7 @@ impl From<ExecutorError> for EtherCatIoError {
     }
 }
 
-// --- EtherCatIo. ------------------------------------------------------------
+// --- WagoBus. ----------------------------------------------------------------
 
 fn kind_to_u8(k: ConnectorHealthKind) -> u8 {
     match k {
@@ -165,117 +166,87 @@ fn kind_to_u8(k: ConnectorHealthKind) -> u8 {
     }
 }
 
-/// EtherCAT IO layer for the WAGO coupler. Implements [`BusIo`].
-pub struct EtherCatIo {
+/// Concrete connector type for the single WAGO coupler on this bus.
+type WagoConnector = EthercatConnector<EthercrabBusDriver<MAX_SUBDEVICES, MAX_PDI>, RawByteCodec>;
+
+/// The WAGO process-image IO handles, driven from the caller's executor.
+///
+/// Owns the connector so it stays alive for as long as the executor runs (the
+/// registered PDI driving holds no separate handle to it). The daemon moves the
+/// whole `WagoBus` into its 10 ms control item and calls [`poll`](Self::poll) /
+/// [`write`](Self::write) each cycle — the executor-driven analogue of the old
+/// synchronous `BusIo`.
+pub struct WagoBus {
+    /// Kept alive for the executor's lifetime; not otherwise touched.
+    _connector: WagoConnector,
     reader: ChannelReader<u8, RawByteCodec, N>,
     writer: ChannelWriter<u8, RawByteCodec, N>,
     health: Arc<AtomicU8>,
     last_input: u8,
     last_output: Option<u8>,
-    _executor: ExecutorHandle,
 }
 
-/// RAII guard that stops the background executor and joins its thread on drop.
-struct ExecutorHandle {
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    join: Option<JoinHandle<()>>,
-}
+/// Build the WAGO connector on NIC `nic`, program the 50 ms SM watchdog and
+/// fixed PDO map, register the connector **and a health pump** into `exec`, and
+/// return the IO handles. The caller adds its control item and runs `exec` as
+/// the main loop (ISSUE_0009).
+///
+/// Requires `CAP_NET_RAW + CAP_NET_ADMIN`.
+pub fn register(nic: &str, exec: &mut Executor) -> Result<WagoBus, EtherCatIoError> {
+    let opts = EthercatConnectorOptions::builder()
+        .pdo_map(PDO_MAP)
+        .network_interface(nic)
+        .cycle_time(CYCLE_TIME)
+        .build();
 
-impl Drop for ExecutorHandle {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
-    }
-}
+    let driver =
+        EthercrabBusDriver::<MAX_SUBDEVICES, MAX_PDI>::new(&WAGO_PDU_STORAGE, opts.clone())?;
 
-impl EtherCatIo {
-    /// Build the driver/connector for the WAGO coupler on NIC `nic`, program the
-    /// 50 ms SM watchdog and fixed PDO map, register the connector with a
-    /// single-worker executor, and spawn that executor on a background thread.
-    ///
-    /// Requires `CAP_NET_RAW + CAP_NET_ADMIN`.
-    pub fn new(nic: &str) -> Result<Self, EtherCatIoError> {
-        let opts = EthercatConnectorOptions::builder()
-            .pdo_map(PDO_MAP)
-            .network_interface(nic)
-            .cycle_time(CYCLE_TIME)
-            .build();
+    let state = Arc::new(EthercatState::new(opts.clone()));
+    let mut connector = EthercatConnector::new(state, driver, RawByteCodec)?;
 
-        let driver =
-            EthercrabBusDriver::<MAX_SUBDEVICES, MAX_PDI>::new(&WAGO_PDU_STORAGE, opts.clone())?;
+    let in_routing = EthercatRouting::new(SUBDEV, PdoDirection::Tx, DI_BIT_OFFSET, DI_BITS);
+    let in_desc = ChannelDescriptor::<EthercatRouting, N>::new(IN_CHANNEL, in_routing)?;
+    let reader = connector.create_reader::<u8, N>(&in_desc)?;
 
-        let state = Arc::new(EthercatState::new(opts.clone()));
-        let mut connector = EthercatConnector::new(state, driver, RawByteCodec)?;
+    let out_routing = EthercatRouting::new(SUBDEV, PdoDirection::Rx, DO_BIT_OFFSET, DO_BITS);
+    let out_desc = ChannelDescriptor::<EthercatRouting, N>::new(OUT_CHANNEL, out_routing)?;
+    let writer = connector.create_writer::<u8, N>(&out_desc)?;
 
-        let in_routing = EthercatRouting::new(SUBDEV, PdoDirection::Tx, DI_BIT_OFFSET, DI_BITS);
-        let in_desc = ChannelDescriptor::<EthercatRouting, N>::new(IN_CHANNEL, in_routing)?;
-        let reader = connector.create_reader::<u8, N>(&in_desc)?;
+    // Register the connector's cyclic PDI driving into the caller's executor.
+    // The example reaches `Up` with this exact shape on the main thread.
+    connector.register_with(exec)?;
 
-        let out_routing = EthercatRouting::new(SUBDEV, PdoDirection::Rx, DO_BIT_OFFSET, DO_BITS);
-        let out_desc = ChannelDescriptor::<EthercatRouting, N>::new(OUT_CHANNEL, out_routing)?;
-        let writer = connector.create_writer::<u8, N>(&out_desc)?;
+    // Health pump (competing consumer: exactly one item drains the events). It
+    // owns the shared health snapshot the control item reads each cycle.
+    let health = Arc::new(AtomicU8::new(kind_to_u8(connector.health().kind())));
+    let health_pump = Arc::clone(&health);
+    let health_sub = connector.subscribe_health();
+    exec.add(item_with_triggers(
+        |d| -> Result<(), ExecutorError> {
+            d.interval(SCAN_INTERVAL);
+            Ok(())
+        },
+        move |_ctx| -> ExecuteResult {
+            while let Ok(Some(event)) = health_sub.try_next() {
+                // Log the full target state (carries the Down/Degraded reason,
+                // e.g. "bring-up failed: … Timeout(Pdu)") — the key bring-up
+                // diagnostic, matching the upstream example.
+                eprintln!("[diag] connector health -> {:?}", event.to);
+                health_pump.store(kind_to_u8(event.to.kind()), Ordering::Release);
+            }
+            Ok(ControlFlow::Continue)
+        },
+    ))?;
 
-        let mut exec = Executor::builder().worker_threads(1).build()?;
-        connector.register_with(&mut exec)?;
-
-        // Health pump (competing consumer: exactly one item drains the events).
-        let health = Arc::new(AtomicU8::new(kind_to_u8(connector.health().kind())));
-        let health_pump = Arc::clone(&health);
-        let health_sub = connector.subscribe_health();
-        exec.add(item_with_triggers(
-            |d| -> Result<(), ExecutorError> {
-                d.interval(SCAN_INTERVAL);
-                Ok(())
-            },
-            move |_ctx| -> ExecuteResult {
-                while let Ok(Some(event)) = health_sub.try_next() {
-                    health_pump.store(kind_to_u8(event.to.kind()), Ordering::Release);
-                }
-                Ok(ControlFlow::Continue)
-            },
-        ))?;
-
-        // Cooperative stop item so dropping EtherCatIo tears the bus down.
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_item = Arc::clone(&stop);
-        exec.add(item_with_triggers(
-            |d| -> Result<(), ExecutorError> {
-                d.interval(SCAN_INTERVAL);
-                Ok(())
-            },
-            move |ctx| -> ExecuteResult {
-                if stop_item.load(Ordering::Acquire) {
-                    ctx.stop_executor();
-                }
-                Ok(ControlFlow::Continue)
-            },
-        ))?;
-
-        let join = std::thread::Builder::new()
-            .name("ethercat-wago".into())
-            .spawn(move || {
-                let _ = exec.run();
-            })
-            .expect("spawn ethercat executor thread");
-
-        Ok(Self {
-            reader,
-            writer,
-            health,
-            last_input: 0,
-            last_output: None,
-            _executor: ExecutorHandle {
-                stop,
-                join: Some(join),
-            },
-        })
-    }
-
-    fn is_healthy(&self) -> bool {
-        self.health.load(Ordering::Acquire) == kind_to_u8(ConnectorHealthKind::Up)
-    }
+    Ok(WagoBus {
+        _connector: connector,
+        reader,
+        writer,
+        health,
+        last_input: 0,
+        last_output: None,
+    })
 }
 
 #[inline]
@@ -292,8 +263,14 @@ fn set_bit(byte: u8, idx: u8, on: bool) -> u8 {
     }
 }
 
-impl BusIo for EtherCatIo {
-    fn poll(&mut self) -> Inputs {
+impl WagoBus {
+    fn is_healthy(&self) -> bool {
+        self.health.load(Ordering::Acquire) == kind_to_u8(ConnectorHealthKind::Up)
+    }
+
+    /// Drain the input channel and decode the latest DI1/DI2 + connector health
+    /// for this scan cycle.
+    pub fn poll(&mut self) -> Inputs {
         loop {
             match self.reader.try_recv() {
                 Ok(Some(env)) => self.last_input = env.value,
@@ -309,7 +286,8 @@ impl BusIo for EtherCatIo {
         }
     }
 
-    fn write(&mut self, out: Outputs) {
+    /// Encode and write DO1/DO2 for this scan cycle (only on change).
+    pub fn write(&mut self, out: Outputs) {
         let mut byte = 0u8;
         byte = set_bit(byte, BIT_WRAP, out.wrap);
         byte = set_bit(byte, BIT_KNIFE, out.knife);

@@ -21,6 +21,7 @@ ethercat = [
     "dep:taktora-connector-ethercat",
     "dep:serde",
     "dep:serde_json",
+    "dep:tokio",
 ]
 watchdog-hw = ["dep:nix", "dep:libc", "dep:log"]
 netmode-hw = []
@@ -32,6 +33,10 @@ hardware = ["transport", "ethercat", "watchdog-hw", "netmode-hw"]
 baler-core = { path = "../baler-core" }
 baler-ipc = { path = "../baler-ipc" }
 
+# Logging backend so ethercrab/taktora `log` output (slave enumeration, bus
+# state) is captured during bring-up; the daemon's own diagnostics use eprintln!.
+env_logger = "0.11"
+
 # --- optional, compiled only under the features above ---
 # taktora ethercat-wago connector stack (REQ_0015). Pin to a rev for repro.
 taktora-executor = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
@@ -41,6 +46,13 @@ taktora-connector-transport-iox = { git = "https://github.com/patdhlk/taktora", 
 taktora-connector-ethercat = { git = "https://github.com/patdhlk/taktora", branch = "main", features = ["bus-integration"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+
+# Multi-threaded tokio runtime so ethercrab's continuous tx/rx network task runs
+# concurrently with the executor's cyclic items. The working example
+# (taktora examples/ethercat-wago-coupler) enables exactly these features; without
+# rt-multi-thread the tx/rx task is starved and the master sends the initial BRD
+# but never receives a reply ("Dropping in-flight future, timeout").
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
 
 # /dev/watchdog ioctl (REQ_0010)
 nix = { version = "0.29", optional = true, default-features = false, features = ["ioctl"] }

@@ -25,6 +25,10 @@ pub struct Outputs {
     pub knife: bool,
 }
 
+/// The host/sim bus port. The EtherCAT build talks to the WAGO connector through
+/// the concrete `ethercat_io::WagoBus` (executor-driven), not this trait, so the
+/// trait and its `SimBus` impl exist only off the `ethercat` feature (ISSUE_0009).
+#[cfg(not(feature = "ethercat"))]
 pub trait BusIo {
     /// Read DI1/DI2 and the connector health for this scan cycle.
     fn poll(&mut self) -> Inputs;
@@ -35,7 +39,11 @@ pub trait BusIo {
 /// Switches the single shared NIC between EtherCAT (raw, no IP) and Ethernet
 /// (static IPv4 up) modes. The EtherCAT master is stopped/recreated by the
 /// daemon around these calls; this trait is purely IP-level.
-pub trait NetworkController {
+///
+/// `Send` because the EtherCAT build drives the control cycle (and thus the
+/// network controller) from a taktora executor item, which runs on a worker
+/// thread (ISSUE_0009).
+pub trait NetworkController: Send {
     /// Bring up the configured static IP and return it. Errors if the link/addr
     /// commands fail (interface missing, no `CAP_NET_ADMIN`, …).
     fn enter_ethernet(&mut self) -> Result<Ipv4Addr, NetworkError>;
@@ -90,18 +98,23 @@ impl std::error::Error for NetworkError {
     }
 }
 
-pub trait Watchdog {
+/// `Send` for the same reason as [`NetworkController`]: the EtherCAT build pets
+/// the watchdog from the executor-driven control item (ISSUE_0009).
+pub trait Watchdog: Send {
     /// Pet the hardware watchdog. Called only from a completed, healthy scan
     /// cycle so a hung loop lets the device reboot.
     fn pet(&mut self);
 }
 
 /// Simulated bus: healthy, knives out, and a periodic "bale full" so the
-/// demo (no coupler) exercises the full→wrap→count cycle. Replaces `EtherCatIo`.
+/// demo (no coupler) exercises the full→wrap→count cycle. Replaces the WAGO
+/// connector off the `ethercat` feature.
+#[cfg(not(feature = "ethercat"))]
 pub struct SimBus {
     start: std::time::Instant,
 }
 
+#[cfg(not(feature = "ethercat"))]
 impl Default for SimBus {
     fn default() -> Self {
         Self {
@@ -110,6 +123,7 @@ impl Default for SimBus {
     }
 }
 
+#[cfg(not(feature = "ethercat"))]
 impl BusIo for SimBus {
     fn poll(&mut self) -> Inputs {
         // Full for an 8 s window every 24 s.
@@ -123,10 +137,12 @@ impl BusIo for SimBus {
     fn write(&mut self, _out: Outputs) {}
 }
 
-/// Returns the demo static IP. Replaces `NetworkMode` on the host.
+/// Returns the demo static IP. Replaces `NetworkMode` off the `netmode-hw` feature.
+#[cfg(not(feature = "netmode-hw"))]
 #[derive(Default)]
 pub struct SimNetwork;
 
+#[cfg(not(feature = "netmode-hw"))]
 impl NetworkController for SimNetwork {
     fn enter_ethernet(&mut self) -> Result<Ipv4Addr, NetworkError> {
         Ok(Ipv4Addr::new(192, 168, 1, 102))
@@ -136,9 +152,11 @@ impl NetworkController for SimNetwork {
     }
 }
 
-/// Does nothing. Replaces `WatchdogPetter` on the host.
+/// Does nothing. Replaces `WatchdogPetter` off the `watchdog-hw` feature.
+#[cfg(not(feature = "watchdog-hw"))]
 pub struct NoopWatchdog;
 
+#[cfg(not(feature = "watchdog-hw"))]
 impl Watchdog for NoopWatchdog {
     fn pet(&mut self) {}
 }

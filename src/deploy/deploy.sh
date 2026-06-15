@@ -48,7 +48,9 @@ chmod +x /usr/local/bin/baler-ui
 mkdir -p /var/lib/baler
 systemctl daemon-reload
 systemctl disable --now cr1140-app.service 2>/dev/null || true
-systemctl enable --now baler-ui.service
+systemctl enable baler-ui.service
+# restart (not just enable --now) so an already-running unit reloads the new binary
+systemctl restart baler-ui.service
 sleep 1
 systemctl --no-pager status baler-ui.service | head -n 12 || true
 '

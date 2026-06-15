@@ -196,6 +196,26 @@ done | wontfix. Edit status in place — git history is the audit trail.
    multi-threaded tokio runtime did not change the symptom — it is the execution
    model, not worker count. Raw capture under ``bringup-logs/`` (gitignored).
 
+   **Design (confirmed).** Split paths, sharing one control-cycle routine:
+
+   - Extract the body of the current 10 ms scan ``loop`` into a shared
+     control-cycle unit (a ``Control`` struct owning ``BalerState``, the two
+     ``PulseEngine``\ s, the two ``Debouncer``\ s, ``CounterStore``, and
+     ``last_ip``, with a ``step(inputs, commands, &mut net) -> (Outputs,
+     StateSnapshot)`` method) so the logic is identical on both paths.
+   - **Sim / host build** (no ``ethercat`` feature): keep today's manual
+     ``loop { poll; step; write; publish; sleep }`` — no taktora dependency.
+   - **EtherCAT build**: build the taktora ``Executor`` in ``main``,
+     ``register_with`` the connector, add the control cycle as a 10 ms executor
+     item (reading/writing the WAGO process image inside the item, plus the
+     transport publish and ``wd.pet()``), add the health pump, and call
+     ``exec.run()`` on the **main thread**. Remove the background-thread spawn in
+     ``EtherCatIo``; rework its surface so it registers the connector into the
+     caller's executor and hands back reader/writer/health handles (the current
+     ``BusIo`` poll/write-from-outside shape conflicts with executor-driven IO).
+   - Drop the diagnostic-only ``BALER_DIAG_EXIT_SECS`` restart-until-up shim once
+     real bring-up works; keep the health-reason logging.
+
    **Acceptance criteria.**
 
    - [ ] The ``ethercat`` (and ``hardware``) build of ``baler-daemon`` reaches

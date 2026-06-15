@@ -162,3 +162,50 @@ done | wontfix. Edit status in place — git history is the audit trail.
    ``cr1140-hal/src/display/surface.rs``, ``docs/slint-spike.md``.
 
    **Blocked by.** None — can start immediately.
+
+.. issue:: baler-daemon EtherCAT never reaches OP — run the taktora executor as the main loop
+   :id: ISSUE_0009
+   :status: ready-for-agent
+   :kind: bug
+   :links: REQ_0015
+
+   **What to fix.** On the CR1140, ``baler-daemon`` built with the ``ethercat``
+   feature never brings the WAGO 750-354 up: the connector sends one initial
+   ``BRD`` and then stays ``Down`` with ``ethercrab: Timeout(Pdu)``, so no
+   SubDevice is enumerated and no I/O flows. The cause is the execution model in
+   ``EtherCatIo`` (``baler-daemon/src/ethercat_io.rs``): the taktora ``Executor``
+   is run on a **detached background thread** (``thread::spawn(|| exec.run())``)
+   while the daemon's synchronous 10 ms scan loop polls the connector through the
+   iceoryx2 channel handles. On that background thread ``exec.run()`` does not
+   schedule the registered interval items — neither the health pump / stop item
+   nor, critically, the connector's own cyclic PDI driving — so bring-up never
+   advances past the construction-time frame. Fix by mirroring the proven
+   ``taktora examples/ethercat-wago-coupler``: run ``exec.run()`` as the daemon's
+   main loop and drive the 10 ms control cycle as an executor item (the
+   mirror-item equivalent), reading/writing the WAGO process image inside that
+   item, rather than bridging to an external sync loop.
+
+   **Evidence (on-device, 2026-06-15).** The known-good example binary,
+   cross-built for ``aarch64-unknown-linux-gnu`` and run on this CR1140 (eth0,
+   same coupler), reached ``Connecting -> Up`` and ran the live DI->DO mirror —
+   proving the NIC, ``fec`` raw-socket path, coupler, port, power, and cabling are
+   all good. Our daemon, under the same connect cycles, only ever logged the
+   single ``BRD`` and ``Timeout(Pdu)``; its health-pump and stop items never ran
+   (the latter forced a 90 s SIGTERM->SIGKILL on shutdown), confirming the
+   background-thread executor does not run its items. ``worker_threads(2)`` and a
+   multi-threaded tokio runtime did not change the symptom — it is the execution
+   model, not worker count. Raw capture under ``bringup-logs/`` (gitignored).
+
+   **Acceptance criteria.**
+
+   - [ ] The ``ethercat`` (and ``hardware``) build of ``baler-daemon`` reaches
+     connector health ``Up`` against the WAGO 750-354 on the CR1140 within a few
+     seconds of the coupler being present.
+   - [ ] Debounced 750-430 inputs (DI1 bale-full, DI2 knife) reach the control
+     state machine and the published ``StateSnapshot``; 750-530 outputs (DO1 wrap,
+     DO2 knife) are driven from the pulses.
+   - [ ] The daemon shuts down cleanly (no SIGKILL hang) and recovers on
+     unplug/replug of the coupler.
+   - [ ] Validated on-device with a captured ``-> Up`` + I/O log.
+
+   **Blocked by.** None — root cause confirmed; can start immediately.

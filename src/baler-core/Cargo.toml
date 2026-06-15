@@ -6,4 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-baler-ipc = { path = "../baler-ipc" }
+# Shared IPC contract types (Mode/Command/StateSnapshot) live here now — they are
+# pure data, serde-encoded over the wire by the taktora transport (ISSUE_0011).
+serde = { version = "1", features = ["derive"] }
+# Compact binary wire codec for the UI⇄daemon channels. Pure, host-testable.
+postcard = "1"
+# taktora's connector contract: PayloadCodec / Routing / ChannelDescriptor /
+# ConnectorError. Pure (no iceoryx2), so the codec + its tests build on the host.
+taktora-connector-core = { git = "https://github.com/patdhlk/taktora", branch = "main" }

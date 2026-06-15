@@ -11,20 +11,30 @@ default = []
 # Standalone framebuffer UI: Slint + cr1140-hal + the real baler-core control
 # logic running in-process. No iceoryx2, no daemon — builds to static aarch64
 # musl and runs by itself on the panel. This is the on-device demo.
-device = ["dep:slint", "dep:cr1140-hal", "dep:baler-core", "dep:slint-build"]
+device = ["dep:slint", "dep:cr1140-hal", "dep:slint-build"]
 
-# Split-process build: same UI, but state comes from baler-daemon over iceoryx2
-# instead of the in-process logic. (iceoryx2 0.8 does not yet cross-compile to
-# musl — see notes; use a glibc target for this.)
-transport = ["device", "baler-ipc/hardware"]
+# Split-process build: same UI, but state comes from baler-daemon over the
+# taktora transport-iox iceoryx2 link instead of the in-process logic (ISSUE_0011).
+# (iceoryx2 0.8 does not yet cross-compile to musl — see notes; use a glibc target.)
+transport = [
+    "device",
+    "dep:iceoryx2",
+    "dep:taktora-connector-core",
+    "dep:taktora-connector-transport-iox",
+]
 
 # Alias for the full split-process device build.
 hardware = ["transport"]
 
 [dependencies]
-baler-ipc = { path = "../baler-ipc" }
-# In-process control logic for the standalone `device` build.
-baler-core = { path = "../baler-core", optional = true }
+# The IPC contract types (Mode/Command/StateSnapshot) and the in-process control
+# logic both live here now (ISSUE_0011 — baler-ipc was removed); always needed.
+baler-core = { path = "../baler-core" }
+
+# taktora transport-iox link to baler-daemon (only under `transport`).
+iceoryx2 = { version = "0.8", optional = true, default-features = false }
+taktora-connector-core = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
+taktora-connector-transport-iox = { git = "https://github.com/patdhlk/taktora", branch = "main", optional = true }
 
 # Slint with NO system backend and NO std font loading — pure-Rust so it
 # cross-compiles to aarch64. Fonts embedded at build time (build.rs).

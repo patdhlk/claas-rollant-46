@@ -12,7 +12,12 @@ default = []
 # Granular edges so a safe on-device demo can run WITHOUT taktora/EtherCAT:
 #   --features transport,watchdog-hw  → Sim bus/net + real watchdog + iceoryx2,
 #   publishes live state to baler-ui without ever touching eth0 or a coupler.
-transport = ["baler-ipc/hardware"]
+# The UI⇄daemon link runs over taktora's transport-iox connector (ISSUE_0011).
+transport = [
+    "dep:iceoryx2",
+    "dep:taktora-connector-core",
+    "dep:taktora-connector-transport-iox",
+]
 ethercat = [
     "dep:taktora-executor",
     "dep:taktora-connector-core",
@@ -31,11 +36,15 @@ hardware = ["transport", "ethercat", "watchdog-hw", "netmode-hw"]
 
 [dependencies]
 baler-core = { path = "../baler-core" }
-baler-ipc = { path = "../baler-ipc" }
 
 # Logging backend so ethercrab/taktora `log` output (slave enumeration, bus
 # state) is captured during bring-up; the daemon's own diagnostics use eprintln!.
 env_logger = "0.11"
+
+# iceoryx2 node/config for the UI⇄daemon transport-iox link. Only compiled with
+# `transport`; the host build never pulls it in. (iceoryx2 0.8 builds for the
+# aarch64 gnu target via `cross`; musl cannot build it.)
+iceoryx2 = { version = "0.8", optional = true, default-features = false }
 
 # --- optional, compiled only under the features above ---
 # taktora ethercat-wago connector stack (REQ_0015). Pin to a rev for repro.

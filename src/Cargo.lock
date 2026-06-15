@@ -318,6 +318,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -399,7 +408,9 @@ dependencies = [
 name = "baler-core"
 version = "0.1.0"
 dependencies = [
- "baler-ipc",
+ "postcard",
+ "serde",
+ "taktora-connector-core",
 ]
 
 [[package]]
@@ -407,8 +418,8 @@ name = "baler-daemon"
 version = "0.1.0"
 dependencies = [
  "baler-core",
- "baler-ipc",
  "env_logger",
+ "iceoryx2",
  "libc",
  "log",
  "nix 0.29.0",
@@ -423,21 +434,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "baler-ipc"
-version = "0.1.0"
-dependencies = [
- "iceoryx2",
-]
-
-[[package]]
 name = "baler-ui"
 version = "0.1.0"
 dependencies = [
  "baler-core",
- "baler-ipc",
  "cr1140-hal",
+ "iceoryx2",
  "slint",
  "slint-build",
+ "taktora-connector-core",
+ "taktora-connector-transport-iox",
 ]
 
 [[package]]
@@ -1405,7 +1411,7 @@ dependencies = [
  "embedded-io-async",
  "ethercrab-wire",
  "futures-lite",
- "heapless",
+ "heapless 0.8.0",
  "libc",
  "lock_api",
  "log",
@@ -1427,7 +1433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d6d2932ef06b10010ddcce399f02fb18d9a45edb80549ec4579d2367edb19ec"
 dependencies = [
  "ethercrab-wire-derive",
- "heapless",
+ "heapless 0.8.0",
 ]
 
 [[package]]
@@ -1914,6 +1920,15 @@ dependencies = [
 
 [[package]]
 name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
+name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
@@ -1955,11 +1970,25 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32 0.2.1",
+ "rustc_version",
+ "serde",
+ "spin 0.9.8",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
- "hash32",
+ "hash32 0.3.1",
  "stable_deref_trait",
 ]
 
@@ -4158,6 +4187,7 @@ dependencies = [
  "cobs",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
+ "heapless 0.7.17",
  "serde",
 ]
 
@@ -5067,6 +5097,9 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spin"

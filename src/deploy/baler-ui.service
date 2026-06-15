@@ -2,7 +2,13 @@
 Description=Baler operator panel (baler-ui)
 # Take over the framebuffer from the stock demo.
 Conflicts=cr1140-app.service
-After=cr1140-app.service systemd-user-sessions.service
+# Start AFTER the daemon (whichever variant): the daemon is the definitive
+# creator of the iceoryx2 `baler.state` / `baler.command` services, so letting it
+# start first avoids the open-or-create boot race (ISSUE_0011). `After=` only
+# orders the *start*, not readiness — the daemon spends seconds bringing the bus
+# up before it creates the channels — so the UI's IpcBackend additionally retries
+# the open with backoff (and cleans stale resources) until the daemon is up.
+After=cr1140-app.service systemd-user-sessions.service baler-ethercat.service baler-daemon.service
 
 [Service]
 Type=simple

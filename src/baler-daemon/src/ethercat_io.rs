@@ -30,7 +30,7 @@ use taktora_connector_host::Connector;
 use taktora_connector_transport_iox::{ChannelReader, ChannelWriter};
 use taktora_executor::{item_with_triggers, ControlFlow, ExecuteResult, Executor, ExecutorError};
 
-use crate::ports::{Inputs, Outputs};
+use crate::ports::{BusController, Inputs, Outputs};
 
 // --- Hardware constants — WAGO 750-354 + 750-430 (DI) + 750-530 (DO). --------
 
@@ -177,13 +177,19 @@ type WagoConnector = EthercatConnector<EthercrabBusDriver<MAX_SUBDEVICES, MAX_PD
 /// [`write`](Self::write) each cycle — the executor-driven analogue of the old
 /// synchronous `BusIo`.
 pub struct WagoBus {
-    /// Kept alive for the executor's lifetime; not otherwise touched.
-    _connector: WagoConnector,
+    /// Kept alive for the executor's lifetime; **dropped** on
+    /// [`suspend`](BusController::suspend) to tear the bus down (ISSUE_0010).
+    /// `None` once suspended — the bus is then quiet and its ports are gone.
+    connector: Option<WagoConnector>,
     reader: ChannelReader<u8, RawByteCodec, N>,
     writer: ChannelWriter<u8, RawByteCodec, N>,
     health: Arc<AtomicU8>,
     last_input: u8,
     last_output: Option<u8>,
+    /// Set by [`restart`](BusController::restart); the run loop drains it via
+    /// [`take_restart_request`](Self::take_restart_request) and exits for a fresh
+    /// process (ISSUE_0010).
+    restart_requested: bool,
 }
 
 /// Build the WAGO connector on NIC `nic`, program the 50 ms SM watchdog and
@@ -240,12 +246,13 @@ pub fn register(nic: &str, exec: &mut Executor) -> Result<WagoBus, EtherCatIoErr
     ))?;
 
     Ok(WagoBus {
-        _connector: connector,
+        connector: Some(connector),
         reader,
         writer,
         health,
         last_input: 0,
         last_output: None,
+        restart_requested: false,
     })
 }
 
@@ -265,12 +272,23 @@ fn set_bit(byte: u8, idx: u8, on: bool) -> u8 {
 
 impl WagoBus {
     fn is_healthy(&self) -> bool {
-        self.health.load(Ordering::Acquire) == kind_to_u8(ConnectorHealthKind::Up)
+        self.connector.is_some()
+            && self.health.load(Ordering::Acquire) == kind_to_u8(ConnectorHealthKind::Up)
     }
 
     /// Drain the input channel and decode the latest DI1/DI2 + connector health
     /// for this scan cycle.
     pub fn poll(&mut self) -> Inputs {
+        // Suspended (Ethernet maintenance mode): the connector is torn down, so the
+        // bus is down and its PDI ports are gone — report not-healthy without
+        // touching them (ISSUE_0010).
+        if self.connector.is_none() {
+            return Inputs {
+                bale_full: false,
+                knife_in: false,
+                healthy: false,
+            };
+        }
         loop {
             match self.reader.try_recv() {
                 Ok(Some(env)) => self.last_input = env.value,
@@ -288,11 +306,50 @@ impl WagoBus {
 
     /// Encode and write DO1/DO2 for this scan cycle (only on change).
     pub fn write(&mut self, out: Outputs) {
+        if self.connector.is_none() {
+            return; // suspended: the bus is torn down, nothing to drive
+        }
         let mut byte = 0u8;
         byte = set_bit(byte, BIT_WRAP, out.wrap);
         byte = set_bit(byte, BIT_KNIFE, out.knife);
         if self.last_output != Some(byte) && self.writer.send(&byte).is_ok() {
             self.last_output = Some(byte);
         }
+    }
+
+    /// Drain a pending restart request (ISSUE_0010). The run loop calls this each
+    /// cycle; when `true`, it exits non-zero so systemd respawns a fresh process
+    /// that re-enumerates the bus (ethercrab enumerates once per process).
+    pub fn take_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.restart_requested)
+    }
+}
+
+impl BusController for WagoBus {
+    /// Tear the EtherCAT master down so it stops driving (and flapping recovery
+    /// on) the bus and releases the raw socket on the maintenance link.
+    ///
+    /// `stop_dispatcher()` alone is **not** enough (ISSUE_0010, found on-device
+    /// 2026-06-15): once the coupler drops, the taktora runner parks inside
+    /// `recover_per_policy` — an infinite reconnect-backoff loop that never
+    /// re-checks the stop flag — so the flapping continues regardless. Dropping
+    /// the connector drops its `EthercatGateway`, whose `Drop` shuts down the
+    /// tokio runtime and aborts the dispatcher + ethercrab tx/rx wherever they
+    /// are parked, which closes the raw socket. The drop is moved onto a detached
+    /// thread so the gateway's blocking `shutdown_timeout` can never stall the
+    /// 10 ms control cycle (and never starves the watchdog). Idempotent.
+    fn suspend(&mut self) {
+        if let Some(connector) = self.connector.take() {
+            eprintln!("[diag] EtherCAT master suspended (Ethernet maintenance mode)");
+            connector.stop_dispatcher();
+            std::thread::spawn(move || drop(connector));
+        }
+    }
+
+    /// Flag a return to EtherCAT. ethercrab cannot re-enumerate in-process, so the
+    /// run loop drains this and exits for a fresh process (ISSUE_0010).
+    fn restart(&mut self) {
+        eprintln!("[diag] EtherCAT return requested; exiting for a fresh bus scan");
+        self.restart_requested = true;
     }
 }

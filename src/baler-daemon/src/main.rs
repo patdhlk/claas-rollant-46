@@ -23,6 +23,9 @@
 mod control;
 mod ports;
 
+#[cfg(feature = "transport")]
+mod transport;
+
 #[cfg(feature = "ethercat")]
 mod ethercat_io;
 #[cfg(feature = "netmode-hw")]
@@ -32,7 +35,7 @@ mod watchdog;
 
 use std::time::Duration;
 
-use baler_ipc::Command;
+use baler_core::Command;
 use control::Control;
 #[cfg(not(feature = "ethercat"))]
 use ports::BusIo;
@@ -97,27 +100,25 @@ fn build_net_wd() -> Result<(Box<dyn NetworkController>, Box<dyn Watchdog>), Dyn
 #[cfg(not(feature = "ethercat"))]
 fn run(mut net: Box<dyn NetworkController>, mut wd: Box<dyn Watchdog>) -> Result<(), DynError> {
     let mut bus = ports::SimBus::default();
+    let mut bus_ctl = ports::NoopBus;
     let mut control = Control::new(COUNTER_PATH)?;
 
-    // iceoryx2 transport to baler-ui (decentralized; ISSUE_0002). The node must
-    // outlive the publisher/subscriber, so it is bound for the whole loop.
+    // iceoryx2 transport to baler-ui over taktora `transport-iox` (ISSUE_0011).
+    // The link owns its node + channels; the boot race is handled inside
+    // `DaemonLink::new` (clean + retry).
     #[cfg(feature = "transport")]
-    let _node = baler_ipc::transport::build_node()?;
-    #[cfg(feature = "transport")]
-    let state_pub = baler_ipc::transport::StatePublisher::new(&_node)?;
-    #[cfg(feature = "transport")]
-    let cmd_rx = baler_ipc::transport::CommandReceiver::new(&_node)?;
+    let link = transport::DaemonLink::new()?;
 
     loop {
         let inputs = bus.poll();
 
         // Commands from baler-ui. Real over iceoryx2; none otherwise.
         #[cfg(feature = "transport")]
-        let commands: Vec<Command> = cmd_rx.drain().unwrap_or_default();
+        let commands: Vec<Command> = link.drain();
         #[cfg(not(feature = "transport"))]
         let commands: Vec<Command> = Vec::new();
 
-        let (outputs, snapshot) = control.step(inputs, commands, &mut *net);
+        let (outputs, snapshot) = control.step(inputs, commands, &mut *net, &mut bus_ctl);
 
         bus.write(outputs);
 
@@ -126,7 +127,7 @@ fn run(mut net: Box<dyn NetworkController>, mut wd: Box<dyn Watchdog>) -> Result
 
         #[cfg(feature = "transport")]
         {
-            let _ = state_pub.publish(&snapshot);
+            link.publish(&snapshot);
         }
         #[cfg(not(feature = "transport"))]
         {
@@ -163,20 +164,13 @@ fn run_ethercat(
     // the link to come up before building the connector (ISSUE_0009).
     wait_for_link(NIC, Duration::from_secs(20));
 
-    // Transport bridge (ISSUE_0009). taktora's `ExecutableItem` is `Send`, but the
-    // iceoryx2 ports baler-ipc wraps hold an `Rc` internally — they are `!Send` and
-    // cannot live inside the executor's control item. So the iceoryx2 publisher /
-    // subscriber are owned by a dedicated relay thread (created there, never moved
-    // across threads) and bridged to the control item with `Send` mpsc channels:
-    // outbound `StateSnapshot`s to publish, inbound `Command`s from the UI. The
-    // relay is not real-time-critical; the hard 10 ms control cycle and the
-    // EtherCAT connector run on the main-thread executor below.
+    // Transport to baler-ui over taktora `transport-iox` (ISSUE_0011). taktora's
+    // channel handles are `Send`, so — unlike the old `baler-ipc` ports (which
+    // held an `Rc` and needed a separate relay thread + mpsc bridge) — the link
+    // moves straight into the executor's control item below and is pumped inline
+    // on the 10 ms cycle. The boot race is handled inside `DaemonLink::new`.
     #[cfg(feature = "transport")]
-    let (snap_tx, snap_rx) = std::sync::mpsc::channel::<baler_ipc::StateSnapshot>();
-    #[cfg(feature = "transport")]
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Command>();
-    #[cfg(feature = "transport")]
-    let _relay = spawn_transport_relay(snap_rx, cmd_tx)?;
+    let link = transport::DaemonLink::new()?;
 
     // One worker, exactly like the upstream example that reaches `Up`. The
     // connector's own tokio runtime (rt-multi-thread) drives ethercrab's
@@ -189,9 +183,12 @@ fn run_ethercat(
     // bus has not reached `Up` within this deadline, exit non-zero so systemd
     // (`Restart=always`) respawns a fresh scan. Once `Up` is seen, never self-exit
     // — the connector handles Degraded/Up recovery from there (ISSUE_0009).
+    // Tripped to exit non-zero for a fresh process — either the bring-up deadline
+    // lapsed before the first `Up`, or the operator returned to EtherCAT from
+    // Ethernet mode (ethercrab enumerates once per process; ISSUE_0009/ISSUE_0010).
     const BRINGUP_DEADLINE: Duration = Duration::from_secs(12);
-    let bringup_failed = Arc::new(AtomicBool::new(false));
-    let failed_flag = Arc::clone(&bringup_failed);
+    let restart_exit = Arc::new(AtomicBool::new(false));
+    let exit_flag = Arc::clone(&restart_exit);
 
     exec.add(item_with_triggers(
         |d| -> Result<(), ExecutorError> {
@@ -201,29 +198,46 @@ fn run_ethercat(
         {
             let started = std::time::Instant::now();
             let mut ever_up = false;
+            let mut maintenance = false;
             move |ctx| -> ExecuteResult {
                 let inputs = bus.poll();
 
                 if inputs.healthy {
                     ever_up = true;
-                } else if !ever_up && started.elapsed() >= BRINGUP_DEADLINE {
+                } else if !ever_up && !maintenance && started.elapsed() >= BRINGUP_DEADLINE {
                     eprintln!(
                         "[diag] EtherCAT not Up within {:?} — exiting so systemd restarts a \
                          fresh bus scan (ethercrab enumerates once at init)",
                         BRINGUP_DEADLINE
                     );
-                    failed_flag.store(true, Ordering::Release);
+                    exit_flag.store(true, Ordering::Release);
                     ctx.stop_executor();
                     return Ok(ControlFlow::Continue);
                 }
 
-                // Commands from baler-ui via the relay. None without transport.
+                // Commands from baler-ui over iceoryx2. None without transport.
                 #[cfg(feature = "transport")]
-                let commands: Vec<Command> = cmd_rx.try_iter().collect();
+                let commands: Vec<Command> = link.drain();
                 #[cfg(not(feature = "transport"))]
                 let commands: Vec<Command> = Vec::new();
 
-                let (outputs, snapshot) = control.step(inputs, commands, &mut *net);
+                let (outputs, snapshot) = control.step(inputs, commands, &mut *net, &mut bus);
+
+                // Once in Ethernet maintenance mode the bus is intentionally down,
+                // so the bring-up backstop must not self-exit on "never reached Up"
+                // (the operator can enter maintenance mode at boot; ISSUE_0010).
+                if snapshot.mode == baler_core::Mode::Ethernet {
+                    maintenance = true;
+                }
+
+                // A return to EtherCAT (from Ethernet maintenance mode) can't
+                // re-enumerate in-process — exit so systemd respawns a fresh scan
+                // (ISSUE_0010). Skip driving outputs on the way out.
+                if bus.take_restart_request() {
+                    exit_flag.store(true, Ordering::Release);
+                    ctx.stop_executor();
+                    return Ok(ControlFlow::Continue);
+                }
 
                 bus.write(outputs);
 
@@ -232,7 +246,7 @@ fn run_ethercat(
 
                 #[cfg(feature = "transport")]
                 {
-                    let _ = snap_tx.send(snapshot); // relay publishes; err only if relay gone
+                    link.publish(&snapshot);
                 }
                 #[cfg(not(feature = "transport"))]
                 {
@@ -246,8 +260,10 @@ fn run_ethercat(
 
     eprintln!("[diag] EtherCAT executor running on the main thread");
     exec.run()?;
-    if bringup_failed.load(Ordering::Acquire) {
-        return Err("EtherCAT bring-up timed out; restarting for a fresh bus scan".into());
+    if restart_exit.load(Ordering::Acquire) {
+        return Err("EtherCAT restart requested (bring-up timeout or return-to-EtherCAT); \
+                    exiting for a fresh bus scan"
+            .into());
     }
     Ok(())
 }
@@ -278,56 +294,4 @@ fn wait_for_link(nic: &str, timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-}
-
-/// Relay thread bridging the executor-driven control cycle to iceoryx2. Owns the
-/// `!Send` iceoryx2 ports (built here, never moved off this thread): forwards UI
-/// `Command`s inbound and publishes the newest `StateSnapshot` outbound, ~every
-/// scan period (ISSUE_0009).
-#[cfg(all(feature = "ethercat", feature = "transport"))]
-fn spawn_transport_relay(
-    snap_rx: std::sync::mpsc::Receiver<baler_ipc::StateSnapshot>,
-    cmd_tx: std::sync::mpsc::Sender<Command>,
-) -> Result<std::thread::JoinHandle<()>, DynError> {
-    use std::sync::mpsc::TryRecvError;
-
-    let handle = std::thread::Builder::new()
-        .name("baler-transport".into())
-        .spawn(move || {
-            let node = match baler_ipc::transport::build_node() {
-                Ok(n) => n,
-                Err(e) => return eprintln!("[transport] build_node failed: {e}"),
-            };
-            let state_pub = match baler_ipc::transport::StatePublisher::new(&node) {
-                Ok(p) => p,
-                Err(e) => return eprintln!("[transport] state publisher failed: {e}"),
-            };
-            let cmd_rx_iox = match baler_ipc::transport::CommandReceiver::new(&node) {
-                Ok(r) => r,
-                Err(e) => return eprintln!("[transport] command receiver failed: {e}"),
-            };
-
-            loop {
-                // Inbound: UI commands -> control item.
-                for cmd in cmd_rx_iox.drain().unwrap_or_default() {
-                    if cmd_tx.send(cmd).is_err() {
-                        return; // control loop gone; tear down the relay
-                    }
-                }
-                // Outbound: publish only the newest snapshot (coalesce backlog).
-                let mut latest = None;
-                loop {
-                    match snap_rx.try_recv() {
-                        Ok(s) => latest = Some(s),
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => return,
-                    }
-                }
-                if let Some(snapshot) = latest {
-                    let _ = state_pub.publish(&snapshot);
-                }
-                std::thread::sleep(SCAN);
-            }
-        })?;
-    Ok(handle)
 }

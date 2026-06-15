@@ -255,9 +255,9 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
 .. issue:: EtherCAT connector keeps flapping recovery in Ethernet/maintenance mode
    :id: ISSUE_0010
-   :status: needs-triage
+   :status: in-progress
    :kind: improvement
-   :links: REQ_0009, ISSUE_0009
+   :links: REQ_0009, ISSUE_0009, ISSUE_0011
 
    **What.** Follow-up from ISSUE_0009. The ``netmode-hw`` switch
    (``NetworkController::enter_ethernet`` / ``enter_ethercat``,
@@ -283,3 +283,199 @@ done | wontfix. Edit status in place — git history is the audit trail.
    control item so it stops pumping the bus while in Ethernet mode.
 
    **Blocked by.** None.
+
+   **Implementation (2026-06-15, host-tested; on-device validation pending).**
+   New ``BusController`` port (``baler-daemon/src/ports.rs``) carries the EtherCAT
+   *master* lifecycle, kept separate from the purely-L3 ``NetworkController``.
+   ``Control::step`` drives it on the same once-per-transition actions that drive
+   the NIC switch: ``SwitchToEthernet`` → ``bus.suspend()`` (stop the master before
+   bringing the static IP up), ``SwitchToEthercat`` → ``bus.restart()``. The
+   host/sim build uses a no-op ``NoopBus``; the ``ethercat`` build implements it on
+   ``WagoBus`` — ``suspend`` calls the connector's ``stop_dispatcher()`` (the
+   dispatcher loop exits, releasing the raw socket and ending the
+   ``Connecting → Degraded`` flapping), and ``restart`` latches a flag the
+   ``run_ethercat`` loop drains to exit non-zero so systemd respawns a fresh
+   process. The single-enumeration restart reuses the ISSUE_0009 bring-up backstop:
+   ethercrab enumerates once per process, so a return to EtherCAT can only come up
+   on a fresh scan.
+
+   *State-machine gate (found during the first on-device run).* The first deploy
+   surfaced that ``EnterEthernet`` was only accepted from ``Mode::Operational``
+   (``baler-core/src/state.rs``): an operator pressing the softkey while the coupler
+   was already absent (bus in ``Fault``) had the command rejected ``NotReady``, so
+   the master never suspended — exactly the "any time the coupler is absent" case
+   this issue names. ``EnterEthernet`` now switches to maintenance mode from any
+   non-Ethernet mode (Operational-idle, Fault, Initializing); only ``AlreadyEthernet``
+   and the pulse-active ``NotIdle`` guard remain. The ``run_ethercat`` bring-up
+   backstop is suppressed once maintenance mode is entered, so entering it at boot
+   (coupler never up) does not get rebooted away.
+
+   *UI gate (found during the second on-device run).* The operator panel
+   (``baler-ui``) pinned itself to a modal ``Fault`` screen whenever the bus was
+   faulted and swallowed every key (``Nav::Fault => {}``), so the operator could not
+   reach Service → Ethernet maintenance mode precisely when the bus was flapping —
+   the UI mirror of the daemon gate above. Fixed by extracting the mode→screen
+   transition into a pure, unit-tested ``next_nav`` that never traps the operator in
+   the Service menu, plus an ``F6 → Service`` route (and on-screen hint) on the Fault
+   screen.
+
+   Also learned on-device: ``eth0`` carries the ``192.168.1.102/24`` static IP from
+   the OS network config at boot, independent of the daemon — so the box is
+   reachable on that IP even in EtherCAT mode, and ``enter_ethernet`` is not what
+   makes it reachable.
+
+   Covered by unit tests: ``control.rs`` (``FakeBus`` recorder) — entering Ethernet
+   suspends exactly once and never restarts, returning restarts exactly once without
+   a second suspend, ordinary cycles leave the master untouched; ``state.rs`` —
+   ``EnterEthernet`` accepted from ``Fault`` and ``Initializing``; ``baler-ui``
+   ``next_nav`` — a ``Fault`` never traps the operator off the Service menu. Builds
+   clean across ``ethercat`` / ``hardware`` / ``ethercat,transport`` and
+   ``baler-ui --features hardware``.
+
+   **On-device end-to-end validation: deferred (blocked by ISSUE_0011).** Exercising
+   the suspend through the real panel needs the ``baler-ui`` ⇄ ``baler-daemon``
+   iceoryx2 link, which was discovered to have never worked on this device: the two
+   units race to open/create the shared ``baler/state`` service at boot and corrupt
+   it (``ServiceInCorruptedState``), so the daemon's relay dies and it runs deaf and
+   mute — no published state, no received commands. That is a separate, pre-existing
+   transport-bring-up bug (masked until now because the panel was the standalone
+   ``--features device`` sim that never used the link); tracked as ISSUE_0011. Once
+   it is fixed, validate: coupler attached → ``Up`` → press EnterEthernet → confirm
+   ``EtherCAT master suspended`` and **no further** ``Timeout(Pdu)`` flapping, then
+   return to EtherCAT and confirm a fresh ``Up``.
+
+   The code fix (daemon suspend/restart + the two gate relaxations) is complete and
+   unit-tested; closing here on that basis with on-device validation tracked under
+   ISSUE_0011.
+
+   **REOPENED — on-device validation 2026-06-15 (after ISSUE_0011 fixed): suspend
+   did NOT quiet the bus.** With the real ``baler-ethercat`` + transport ``baler-ui``
+   running on the CR1140, EtherCAT reached ``Up``, the panel showed live state, and
+   the operator's EnterEthernet keypress reached the daemon (``EtherCAT master
+   suspended`` logged — proving the ISSUE_0011 link works end-to-end). **But the
+   ``Timeout(Pdu)`` flapping continued for minutes after the suspend log.** Root
+   cause traced into taktora ``connector-ethercat``: ``suspend()`` called only
+   ``connector.stop_dispatcher()``, which sets a stop flag the ``dispatcher_loop``
+   checks *between cycles* — but once the coupler drops, ``CycleRunner::tick`` enters
+   ``recover_per_policy`` (``runner.rs``), an **infinite reconnect-backoff loop that
+   never re-checks the stop flag**, so the runner is parked there and the flag is
+   never seen.
+
+   *Fix (2026-06-15).* ``WagoBus.connector`` is now an ``Option``; ``suspend()``
+   **drops** the connector (after a best-effort ``stop_dispatcher``). Dropping it
+   drops the ``EthercatGateway``, whose ``Drop`` runs ``runtime.shutdown_timeout``,
+   aborting the dispatcher + ethercrab tx/rx wherever parked and closing the raw
+   socket — which actually quiets ``eth0``. The drop runs on a detached thread so
+   the gateway's blocking shutdown never stalls the 10 ms control cycle (or starves
+   the watchdog); ``poll``/``write``/``is_healthy`` short-circuit to "bus down" once
+   suspended.
+
+   *UI navigation (found in the same run).* Returning to EtherCAT brought the bus
+   back ``Up`` but the panel didn't switch back — and entering Ethernet from the
+   Service menu didn't move to the Ethernet screen. ``next_nav`` (``baler-ui``) had a
+   blanket "stay in Service" short-circuit; it now *follows the mode*: Ethernet →
+   the Ethernet screen (even from Service), recovered-out-of-Ethernet → Main
+   (mirroring Fault recovery), while still never yanking the operator off Service
+   during a **Fault**. Six ``next_nav`` unit tests green.
+
+   Both fixes deployed (``baler-ethercat`` + ``baler-ui``, cross-built gnu, host
+   tests green: baler-core 31 / daemon 10 / ui 6). **Re-validation pending** on the
+   next coupler-attached reboot: EnterEthernet → ``suspended`` → flapping **stops**,
+   panel shows the Ethernet screen; ReturnToEthercat → fresh ``Up`` → panel returns
+   to Main.
+
+.. issue:: baler-ui ⇄ baler-daemon iceoryx2 link never connects (baler/state startup race)
+   :id: ISSUE_0011
+   :status: done
+   :kind: bug
+   :links: ISSUE_0010, ISSUE_0002
+
+   **What.** In the two-process device build (``baler-ethercat`` daemon +
+   ``baler-ui`` operator panel, both ``--features hardware``/``transport``), the UI
+   never receives daemon state and the daemon never receives UI commands. On the
+   CR1140 the panel sits permanently on ``Initializing`` while the bus is actually
+   ``Up``, and operator softkeys (Wrap, ToggleKnife, EnterEthernet, …) have no
+   effect — the daemon is deaf and mute.
+
+   **Root cause (on-device, 2026-06-15).** ``baler-ui`` and ``baler-ethercat`` start
+   concurrently at boot with no ordering and both *open-or-create* the shared
+   iceoryx2 pub/sub service ``baler/state``. They race and corrupt it: the daemon's
+   transport relay fails at construction with
+   ``PublishSubscribeOpenError(ServiceInCorruptedState)``, logs ``[transport] state
+   publisher failed: …`` once, and the relay thread returns — so the daemon runs
+   with **no** state publisher and **no** command receiver for the rest of the
+   process lifetime. The UI subscriber then has no publisher to read, so its
+   ``IpcBackend`` never advances past the initial ``Mode::Initializing``. Observed:
+   ``baler-ui`` started 12:28:20, daemon relay publisher failed 12:28:23 (same
+   boot); a stale-resource variant also crash-loops the UI
+   (``NRestarts`` in the hundreds) until the iceoryx2 tmpfs state under
+   ``/tmp/iceoryx2`` is wiped (it is ``tmpfs``, so a reboot clears it — but the race
+   re-corrupts on the next boot).
+
+   **Why it was never seen before.** The deployed panel was the standalone
+   ``baler-ui --features device`` build (in-process control, **zero** iceoryx2),
+   which never used the link. The two-process transport path has therefore never
+   actually run on this device. Surfaced while validating ISSUE_0010 (which needs
+   the UI to deliver ``EnterEthernet`` to the daemon).
+
+   **Possible fix.** Order the units (``baler-ui`` ``After=baler-ethercat.service``)
+   and make the publisher the definitive creator before the subscriber opens; and/or
+   make the ``baler-ipc`` transport bring-up robust to the race — clean a corrupted
+   service and retry open-or-create with backoff rather than failing fatally, and do
+   not let a relay/publisher construction failure permanently disable the daemon's
+   transport (retry, or treat the relay as restartable). Consider an
+   ``ExecStartPre`` clean-slate of ``/tmp/iceoryx2`` and a readiness wait.
+
+   **Blocked by.** None. **Blocks** on-device end-to-end validation of ISSUE_0010.
+
+   **Implementation (2026-06-15, host + cross-compile tested; on-device validation
+   pending).** Root-caused as two parallel iceoryx2 stacks: the EtherCAT bus was
+   already on taktora (``taktora-connector-ethercat``), but the UI⇄daemon link was
+   a hand-rolled ``baler-ipc`` iceoryx2 wrapper bridged into the executor by a
+   dedicated relay thread + mpsc channels — the relay existed only because
+   ``baler-ipc``'s ports held an ``Rc`` and were ``!Send``. taktora already ships
+   the intended transport (``taktora-connector-transport-iox``: ``ServiceFactory``
+   + ``ChannelWriter`` / ``ChannelReader``), whose handles **are** ``Send``.
+
+   *Re-architecture.* Deleted the ``baler-ipc`` crate. Its contract types
+   (``Mode`` / ``Command`` / ``KnifePos`` / ``StateSnapshot``) moved into
+   ``baler-core`` as plain ``serde`` types (the iceoryx2 ``ZeroCopySend`` /
+   ``#[repr(C)]`` are gone — taktora frames a serialised payload inside its own
+   envelope). The UI⇄daemon state/command now flow over two ``transport-iox``
+   pub/sub services (``baler.state``, ``baler.command``) encoded with a new
+   host-tested ``PostcardCodec`` (``baler-core::codec``). The daemon opens a
+   ``DaemonLink`` and pumps it **inline in the executor control item** — the relay
+   thread and mpsc bridge are deleted; the sim-loop path uses the same link. The
+   UI's ``IpcBackend`` opens the mirror handles.
+
+   *Race fix.* Both sides still ``open_or_create`` (taktora's ``ServiceFactory``
+   does too), so the boot race is defeated by ``baler-core::bringup::retry_open``:
+   on a corruption error it runs iceoryx2's ``Node::cleanup_dead_nodes`` (a
+   *targeted* clear of resources a half-creating/dead process left behind —
+   strictly better than the ``rm -rf /tmp/iceoryx2`` the original note floated,
+   which would clobber a live daemon's services) and retries with linear backoff,
+   rather than dying deaf-and-mute. systemd now orders ``baler-ui``
+   ``After=baler-ethercat.service``/``baler-daemon.service`` so the daemon (the
+   definitive creator) starts first; ``After=`` only orders the start, so
+   ``retry_open`` bridges the readiness gap while the daemon brings the bus up.
+
+   *Tests.* Host unit tests for the two pure, extracted pieces: ``codec`` —
+   ``StateSnapshot`` / ``Command`` round-trip and too-small-buffer rejection;
+   ``bringup::retry_open`` — ok-first-try, give-up-after-max, clean-on-corruption
+   then recover, no-clean-on-transient. Full host suite green (``baler-core`` 31,
+   ``baler-daemon`` 10, ``baler-ui`` 5). Cross-compiled clean for
+   ``aarch64-unknown-linux-gnu`` across ``baler-daemon --features hardware`` and
+   ``transport,watchdog-hw`` and ``baler-ui --features hardware`` and ``device`` —
+   confirming ``DaemonLink`` satisfies the ``Send`` bound to live in the executor
+   item and that the new code builds against real iceoryx2 + taktora.
+
+   **On-device validation: pending (manual).** iceoryx2 cannot run on the macOS
+   host, so the real two-process link is validated only on the CR1140: deploy via
+   ``deploy/deploy-2proc.sh``, confirm the panel leaves ``Initializing`` and shows
+   live bus state, softkeys reach the daemon, and a reboot no longer corrupts
+   ``baler.state``. This same run also clears ISSUE_0010's deferred on-device
+   validation (press EnterEthernet → ``EtherCAT master suspended``, no further
+   ``Timeout(Pdu)`` flapping; return to EtherCAT → fresh ``Up``).
+
+   The code re-architecture + race fix are complete and host/cross validated;
+   closing on that basis with the on-device run tracked in this note.

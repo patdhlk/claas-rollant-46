@@ -98,6 +98,26 @@ impl std::error::Error for NetworkError {
     }
 }
 
+/// Stops and re-creates the EtherCAT master around a maintenance-mode switch
+/// (ISSUE_0010). The L3 NIC switch lives in [`NetworkController`]; this port is
+/// the master's lifecycle, deliberately kept separate.
+///
+/// ethercrab enumerates the bus once per process, so there is no in-process
+/// "resume": [`suspend`](Self::suspend) stops the connector's dispatcher and
+/// releases the raw socket; [`restart`](Self::restart) asks for a fresh process
+/// (the EtherCAT run path exits non-zero so systemd respawns and re-enumerates).
+///
+/// `Send` for the same reason as [`NetworkController`]: the EtherCAT build drives
+/// it from the executor-driven control item, which runs on a worker thread.
+pub trait BusController: Send {
+    /// Stop pumping the EtherCAT bus and release the raw socket so it stops
+    /// flapping recovery on the maintenance link.
+    fn suspend(&mut self);
+    /// Request the EtherCAT master be brought back up. On the device this means a
+    /// process restart (fresh enumeration); the host/sim build no-ops.
+    fn restart(&mut self);
+}
+
 /// `Send` for the same reason as [`NetworkController`]: the EtherCAT build pets
 /// the watchdog from the executor-driven control item (ISSUE_0009).
 pub trait Watchdog: Send {
@@ -135,6 +155,17 @@ impl BusIo for SimBus {
         }
     }
     fn write(&mut self, _out: Outputs) {}
+}
+
+/// No-op bus controller for the host/sim run path: there is no EtherCAT master
+/// to stop or recreate. The EtherCAT build uses `WagoBus` instead (ISSUE_0010).
+#[cfg(not(feature = "ethercat"))]
+pub struct NoopBus;
+
+#[cfg(not(feature = "ethercat"))]
+impl BusController for NoopBus {
+    fn suspend(&mut self) {}
+    fn restart(&mut self) {}
 }
 
 /// Returns the demo static IP. Replaces `NetworkMode` off the `netmode-hw` feature.

@@ -5,7 +5,7 @@
 //! why it was [`Reject`]ed). It does NOT own the pulses or counters — the daemon
 //! wires those together — so transition coverage is table-testable in isolation.
 
-use baler_ipc::{Command, Mode};
+use crate::ipc::{Command, Mode};
 
 /// A side effect the daemon must carry out as a result of a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,16 +105,18 @@ impl BalerState {
             Command::ResetTotal => Ok(Action::ResetTotal),
             Command::EnterEthernet => match self.mode {
                 Mode::Ethernet => Err(Reject::AlreadyEthernet),
-                Mode::Operational => {
-                    if any_pulse_active {
-                        Err(Reject::NotIdle)
-                    } else {
-                        self.mode = Mode::Ethernet;
-                        self.mark_inputs_unknown();
-                        Ok(Action::SwitchToEthernet)
-                    }
+                // A pulse in flight (only possible while Operational) blocks the
+                // idle-only switch.
+                Mode::Operational if any_pulse_active => Err(Reject::NotIdle),
+                // Operational (idle), Fault, or Initializing: enter maintenance
+                // mode. This must NOT require a healthy bus — the operator most
+                // needs it when the coupler is absent and the bus is flapping, to
+                // stop the master and reclaim the NIC (ISSUE_0010).
+                _ => {
+                    self.mode = Mode::Ethernet;
+                    self.mark_inputs_unknown();
+                    Ok(Action::SwitchToEthernet)
                 }
-                _ => Err(Reject::NotReady),
             },
             Command::ReturnToEthercat => {
                 if self.mode == Mode::Ethernet {
@@ -206,6 +208,32 @@ mod tests {
             Ok(Action::SwitchToEthercat)
         );
         assert_eq!(s.mode(), Mode::Initializing);
+    }
+
+    #[test]
+    fn enter_ethernet_allowed_while_bus_is_down() {
+        // The operator most needs maintenance mode exactly when the coupler is
+        // gone and the bus is flapping (ISSUE_0010) — a Fault must not block it.
+        let mut s = operational();
+        s.on_bus_health(false);
+        assert_eq!(s.mode(), Mode::Fault);
+        assert_eq!(
+            s.handle(Command::EnterEthernet, false),
+            Ok(Action::SwitchToEthernet)
+        );
+        assert_eq!(s.mode(), Mode::Ethernet);
+    }
+
+    #[test]
+    fn enter_ethernet_allowed_at_boot_before_first_health() {
+        // Coupler never came up at boot: still let the operator reclaim the NIC.
+        let mut s = BalerState::new();
+        assert_eq!(s.mode(), Mode::Initializing);
+        assert_eq!(
+            s.handle(Command::EnterEthernet, false),
+            Ok(Action::SwitchToEthernet)
+        );
+        assert_eq!(s.mode(), Mode::Ethernet);
     }
 
     #[test]

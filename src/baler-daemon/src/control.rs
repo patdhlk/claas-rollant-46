@@ -34,7 +34,11 @@ pub struct Control {
     counters: CounterStore,
     state: BalerState,
     wrap: PulseEngine,
-    knife: PulseEngine,
+    /// Directional knife pulses. A `FireKnife` triggers exactly one based on the
+    /// live ch2 (DI2) value, and only while neither is active (interlock) — DO2
+    /// and DO3 can never be energized together.
+    knives_in: PulseEngine,
+    knives_out: PulseEngine,
     full_db: Debouncer,
     knife_db: Debouncer,
     last_ip: Option<Ipv4Addr>,
@@ -46,10 +50,12 @@ pub struct Control {
     last_di2: bool,
     /// Manual-IO mode (REQ_0018): cycles remaining before the command watchdog
     /// fails safe. >0 means the IO test screen is driving the outputs directly;
-    /// `manual_wrap`/`manual_knife` are the latest operator-held bits.
+    /// `manual_wrap`/`manual_knives_in`/`manual_knives_out` are the latest
+    /// operator-held bits.
     manual_io_remaining: u32,
     manual_wrap: bool,
-    manual_knife: bool,
+    manual_knives_in: bool,
+    manual_knives_out: bool,
 }
 
 impl Control {
@@ -59,7 +65,8 @@ impl Control {
             counters: CounterStore::load(counter_path.into())?,
             state: BalerState::new(),
             wrap: PulseEngine::new(PULSE),
-            knife: PulseEngine::new(PULSE),
+            knives_in: PulseEngine::new(PULSE),
+            knives_out: PulseEngine::new(PULSE),
             full_db: Debouncer::new(DEBOUNCE, false),
             knife_db: Debouncer::new(DEBOUNCE, false),
             last_ip: None,
@@ -68,7 +75,8 @@ impl Control {
             last_di2: false,
             manual_io_remaining: 0,
             manual_wrap: false,
-            manual_knife: false,
+            manual_knives_in: false,
+            manual_knives_out: false,
         })
     }
 
@@ -108,16 +116,18 @@ impl Control {
             // IO test screen (REQ_0018): intercept before the state machine. Its
             // presence (re)arms the watchdog; while in manual-IO mode the normal
             // control state machine is suspended.
-            if let Command::ManualIo { wrap, knife } = cmd {
+            if let Command::ManualIo { wrap, knives_in, knives_out } = cmd {
                 got_manual = true;
                 self.manual_wrap = wrap;
-                self.manual_knife = knife;
+                self.manual_knives_in = knives_in;
+                self.manual_knives_out = knives_out;
                 continue;
             }
             if self.manual_io_remaining > 0 {
                 continue; // manual-IO mode: ignore machine/mode commands
             }
-            let any_active = self.wrap.is_active() || self.knife.is_active();
+            let knife_active = self.knives_in.is_active() || self.knives_out.is_active();
+            let any_active = self.wrap.is_active() || knife_active;
             match self.state.handle(cmd, any_active) {
                 Ok(Action::FireWrap) => {
                     self.wrap.trigger();
@@ -126,7 +136,17 @@ impl Control {
                     self.full_latch_remaining = 0;
                 }
                 Ok(Action::FireKnife) => {
-                    self.knife.trigger();
+                    // Directional: ch2 (debounced DI2) picks the output — true →
+                    // knives-in (DO2), false → knives-out (DO3). Interlock on the
+                    // OR of both pulses so DO2 and DO3 are never driven together,
+                    // even if ch2 flips mid-pulse and the operator re-fires.
+                    if !knife_active {
+                        if self.knife_db.level() {
+                            self.knives_in.trigger();
+                        } else {
+                            self.knives_out.trigger();
+                        }
+                    }
                 }
                 Ok(Action::ResetSession) => {
                     if let Err(e) = self.counters.reset_session() {
@@ -168,9 +188,13 @@ impl Control {
         let outputs = if self.manual_io_remaining > 0 {
             // Manual-IO mode: drive outputs straight from the operator's held keys,
             // but only while the bus is up — never energize into a faulted bus.
+            // The knife outputs are interlocked even here (knives-in wins) so the
+            // test screen can never drive DO2 and DO3 together.
+            let knives_in = inputs.healthy && self.manual_knives_in;
             Outputs {
                 wrap: inputs.healthy && self.manual_wrap,
-                knife: inputs.healthy && self.manual_knife,
+                knives_in,
+                knives_out: inputs.healthy && self.manual_knives_out && !knives_in,
             }
         } else {
             // Normal control: independent pulses; a wrap counts only on clean
@@ -181,10 +205,12 @@ impl Control {
                     eprintln!("[control] wrap counter persist failed: {e}");
                 }
             }
-            let _ = self.knife.tick(SCAN, inputs.healthy);
+            let _ = self.knives_in.tick(SCAN, inputs.healthy);
+            let _ = self.knives_out.tick(SCAN, inputs.healthy);
             Outputs {
                 wrap: self.wrap.output(),
-                knife: self.knife.output(),
+                knives_in: self.knives_in.output(),
+                knives_out: self.knives_out.output(),
             }
         };
         (outputs, self.snapshot())
@@ -203,7 +229,7 @@ impl Control {
             wrap_armed: self.state.wrap_armed(),
             full_latched: self.full_latch_remaining > 0,
             wrap_active: self.wrap.is_active(),
-            knife_active: self.knife.is_active(),
+            knife_active: self.knives_in.is_active() || self.knives_out.is_active(),
             session: counts.session,
             total: counts.total,
             di1: self.last_di1,
@@ -288,7 +314,8 @@ mod tests {
 
         assert_eq!(snap.mode, Mode::Operational);
         assert!(!out.wrap);
-        assert!(!out.knife);
+        assert!(!out.knives_in);
+        assert!(!out.knives_out);
         assert!(!snap.wrap_active);
         assert!(!snap.knife_active);
     }
@@ -366,21 +393,51 @@ mod tests {
 
         let (out, _) = c.step(
             healthy(),
-            vec![Command::ManualIo { wrap: true, knife: false }],
+            vec![Command::ManualIo { wrap: true, knives_in: false, knives_out: false }],
             &mut net,
             &mut bus,
         );
         assert!(out.wrap, "manual-IO energizes DO1 directly");
-        assert!(!out.knife);
+        assert!(!out.knives_in);
+        assert!(!out.knives_out);
 
         let (out, _) = c.step(
             healthy(),
-            vec![Command::ManualIo { wrap: false, knife: true }],
+            vec![Command::ManualIo { wrap: false, knives_in: true, knives_out: false }],
             &mut net,
             &mut bus,
         );
         assert!(!out.wrap);
-        assert!(out.knife, "manual-IO energizes DO2 directly");
+        assert!(out.knives_in, "manual-IO energizes DO2 directly");
+        assert!(!out.knives_out);
+
+        let (out, _) = c.step(
+            healthy(),
+            vec![Command::ManualIo { wrap: false, knives_in: false, knives_out: true }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(out.knives_out, "manual-IO energizes DO3 directly");
+        assert!(!out.knives_in);
+    }
+
+    #[test]
+    fn manual_io_interlocks_the_two_knife_outputs() {
+        let mut c = Control::new(scratch("manualinterlock")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        // Both knife keys held at once: the interlock lets knives-in win and keeps
+        // DO3 low — DO2 and DO3 are never energized together.
+        let (out, _) = c.step(
+            healthy(),
+            vec![Command::ManualIo { wrap: false, knives_in: true, knives_out: true }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(out.knives_in, "knives-in wins the interlock");
+        assert!(!out.knives_out, "knives-out is suppressed while knives-in is driven");
     }
 
     #[test]
@@ -392,11 +449,11 @@ mod tests {
 
         let (out, _) = c.step(
             healthy(),
-            vec![Command::ManualIo { wrap: true, knife: true }],
+            vec![Command::ManualIo { wrap: true, knives_in: true, knives_out: false }],
             &mut net,
             &mut bus,
         );
-        assert!(out.wrap && out.knife, "manual-IO energizes both outputs");
+        assert!(out.wrap && out.knives_in, "manual-IO energizes both outputs");
 
         // Stop sending ManualIo — within the watchdog window the outputs fall.
         let mut out = out;
@@ -405,7 +462,7 @@ mod tests {
             out = o;
         }
         assert!(
-            !out.wrap && !out.knife,
+            !out.wrap && !out.knives_in && !out.knives_out,
             "watchdog de-energizes the outputs when the ManualIo stream stops"
         );
 
@@ -426,11 +483,14 @@ mod tests {
         let down = Inputs { bale_full: false, knife_in: false, healthy: false };
         let (out, _) = c.step(
             down,
-            vec![Command::ManualIo { wrap: true, knife: true }],
+            vec![Command::ManualIo { wrap: true, knives_in: true, knives_out: true }],
             &mut net,
             &mut bus,
         );
-        assert!(!out.wrap && !out.knife, "manual-IO never drives a faulted bus");
+        assert!(
+            !out.wrap && !out.knives_in && !out.knives_out,
+            "manual-IO never drives a faulted bus"
+        );
     }
 
     #[test]
@@ -444,21 +504,70 @@ mod tests {
 
         assert!(out.wrap, "an accepted Wrap fires the DO1 pulse");
         assert!(snap.wrap_active);
-        assert!(!out.knife);
+        assert!(!out.knives_in);
+        assert!(!out.knives_out);
+    }
+
+    /// Steady `knife_in` (ch2) input until the debounce settles, so direction
+    /// selection sees the intended level.
+    fn knives_in_input() -> Inputs {
+        Inputs { bale_full: false, knife_in: true, healthy: true }
     }
 
     #[test]
-    fn knife_command_drives_do2() {
-        let mut c = Control::new(scratch("knife")).unwrap();
+    fn knife_command_with_ch2_false_drives_knives_out_do3() {
+        let mut c = Control::new(scratch("knifeout")).unwrap();
         let mut net = FakeNet::default();
         let mut bus = FakeBus::default();
-        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational; ch2 low
 
         let (out, snap) = c.step(healthy(), vec![Command::ToggleKnife], &mut net, &mut bus);
 
-        assert!(out.knife, "an accepted ToggleKnife fires the DO2 pulse");
+        assert!(out.knives_out, "ch2 false fires the DO3 (knives-out) pulse");
+        assert!(!out.knives_in);
         assert!(snap.knife_active);
         assert!(!out.wrap);
+    }
+
+    #[test]
+    fn knife_command_with_ch2_true_drives_knives_in_do2() {
+        let mut c = Control::new(scratch("knifein")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        // Hold ch2 high long enough to cross the debounce before firing.
+        for _ in 0..DEBOUNCE {
+            c.step(knives_in_input(), vec![], &mut net, &mut bus);
+        }
+
+        let (out, snap) =
+            c.step(knives_in_input(), vec![Command::ToggleKnife], &mut net, &mut bus);
+
+        assert!(out.knives_in, "ch2 true fires the DO2 (knives-in) pulse");
+        assert!(!out.knives_out);
+        assert!(snap.knife_active);
+        assert!(!out.wrap);
+    }
+
+    #[test]
+    fn knife_outputs_interlock_when_ch2_flips_mid_pulse() {
+        let mut c = Control::new(scratch("knifeinterlock")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // Operational; ch2 low
+
+        // ch2 low → a knives-out pulse starts.
+        let (out, _) = c.step(healthy(), vec![Command::ToggleKnife], &mut net, &mut bus);
+        assert!(out.knives_out && !out.knives_in);
+
+        // ch2 flips high and the operator re-fires while the pulse is still in
+        // flight: the interlock must keep knives-in low (no opposing output).
+        for _ in 0..DEBOUNCE {
+            c.step(knives_in_input(), vec![], &mut net, &mut bus);
+        }
+        let (out, _) =
+            c.step(knives_in_input(), vec![Command::ToggleKnife], &mut net, &mut bus);
+        assert!(out.knives_out, "the original knives-out pulse keeps running");
+        assert!(!out.knives_in, "the interlock blocks the opposing output");
     }
 
     #[test]

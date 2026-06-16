@@ -56,7 +56,8 @@ const DO_BITS: u16 = 8;
 const BIT_BALE_FULL: u8 = 0; // DI1
 const BIT_KNIFE_IN: u8 = 1; // DI2 (true = knives in)
 const BIT_WRAP: u8 = 0; // DO1
-const BIT_KNIFE: u8 = 1; // DO2
+const BIT_KNIVES_IN: u8 = 1; // DO2 (fired when ch2/DI2 is true)
+const BIT_KNIVES_OUT: u8 = 2; // DO3 (fired when ch2/DI2 is false)
 
 /// iceoryx2 service buffer slots.
 const N: usize = 256;
@@ -304,14 +305,15 @@ impl WagoBus {
         }
     }
 
-    /// Encode and write DO1/DO2 for this scan cycle (only on change).
+    /// Encode and write DO1/DO2/DO3 for this scan cycle (only on change).
     pub fn write(&mut self, out: Outputs) {
         if self.connector.is_none() {
             return; // suspended: the bus is torn down, nothing to drive
         }
         let mut byte = 0u8;
         byte = set_bit(byte, BIT_WRAP, out.wrap);
-        byte = set_bit(byte, BIT_KNIFE, out.knife);
+        byte = set_bit(byte, BIT_KNIVES_IN, out.knives_in);
+        byte = set_bit(byte, BIT_KNIVES_OUT, out.knives_out);
         if self.last_output != Some(byte) && self.writer.send(&byte).is_ok() {
             self.last_output = Some(byte);
         }

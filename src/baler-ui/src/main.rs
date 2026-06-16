@@ -62,7 +62,8 @@ trait Backend {
 struct LocalBackend {
     state: baler_core::state::BalerState,
     wrap: baler_core::pulse::PulseEngine,
-    knife: baler_core::pulse::PulseEngine,
+    knives_in: baler_core::pulse::PulseEngine,
+    knives_out: baler_core::pulse::PulseEngine,
     counters: baler_core::counter::CounterStore,
     sim_full: bool,
     sim_knife_in: bool,
@@ -78,7 +79,8 @@ impl LocalBackend {
         Self {
             state,
             wrap: baler_core::pulse::PulseEngine::new(std::time::Duration::from_secs(5)),
-            knife: baler_core::pulse::PulseEngine::new(std::time::Duration::from_secs(5)),
+            knives_in: baler_core::pulse::PulseEngine::new(std::time::Duration::from_secs(5)),
+            knives_out: baler_core::pulse::PulseEngine::new(std::time::Duration::from_secs(5)),
             counters: baler_core::counter::CounterStore::load("/var/lib/baler/counters")
                 .unwrap_or_else(|_| {
                     // Fall back to a temp path if /var/lib is not writable.
@@ -106,7 +108,7 @@ impl LocalBackend {
             // Standalone demo has no daemon latch; mirror the live full state.
             full_latched: self.state.bale_full(),
             wrap_active: self.wrap.is_active(),
-            knife_active: self.knife.is_active(),
+            knife_active: self.knives_in.is_active() || self.knives_out.is_active(),
             session: counts.session,
             total: counts.total,
             di1: self.state.bale_full(),
@@ -131,8 +133,11 @@ impl Backend for LocalBackend {
         if let PulseEvent::Completed = self.wrap.tick(dt, true) {
             let _ = self.counters.increment_wrap();
         }
-        if let PulseEvent::Completed = self.knife.tick(dt, true) {
-            // Simulate the knives physically flipping when the pulse completes.
+        // Either directional pulse completing simulates the knives physically
+        // flipping, so successive presses exercise both DO2 and DO3 in the demo.
+        let in_done = self.knives_in.tick(dt, true) == PulseEvent::Completed;
+        let out_done = self.knives_out.tick(dt, true) == PulseEvent::Completed;
+        if in_done || out_done {
             self.sim_knife_in = !self.sim_knife_in;
         }
         self.snapshot()
@@ -140,13 +145,22 @@ impl Backend for LocalBackend {
 
     fn command(&mut self, cmd: baler_core::Command) {
         use baler_core::state::Action;
-        let any_active = self.wrap.is_active() || self.knife.is_active();
+        let knife_active = self.knives_in.is_active() || self.knives_out.is_active();
+        let any_active = self.wrap.is_active() || knife_active;
         match self.state.handle(cmd, any_active) {
             Ok(Action::FireWrap) => {
                 self.wrap.trigger();
             }
             Ok(Action::FireKnife) => {
-                self.knife.trigger();
+                // Directional + interlocked, mirroring the daemon: ch2 (DI2) picks
+                // the output, and only while neither knife pulse is active.
+                if !knife_active {
+                    if self.sim_knife_in {
+                        self.knives_in.trigger();
+                    } else {
+                        self.knives_out.trigger();
+                    }
+                }
             }
             Ok(Action::ResetSession) => {
                 let _ = self.counters.reset_session();
@@ -499,7 +513,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      service: &ServiceState,
                      lang: Lang,
                      io_wrap: bool,
-                     io_knife: bool| {
+                     io_knives_in: bool,
+                     io_knives_out: bool| {
         let slint_screen = match nav {
             Nav::Main => Screen::Main,
             Nav::Service => Screen::Service,
@@ -559,19 +574,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_di1(snap.di1);
         ui.set_di2(snap.di2);
         ui.set_out_wrap(io_wrap);
-        ui.set_out_knife(io_knife);
+        ui.set_out_knives_in(io_knives_in);
+        ui.set_out_knives_out(io_knives_out);
     };
 
     // IO test page (REQ_0018): which output keys are currently held. Momentary —
     // the held bits are streamed to the daemon every frame while the page is open.
     let mut io_wrap_held = false;
-    let mut io_knife_held = false;
+    let mut io_knives_in_held = false;
+    let mut io_knives_out_held = false;
 
-    push_view(&ui, nav, &snap, &service, lang, io_wrap_held, io_knife_held);
+    push_view(
+        &ui, nav, &snap, &service, lang, io_wrap_held, io_knives_in_held, io_knives_out_held,
+    );
 
     let mut led = LedBeacon::new();
     let frame_period = Duration::from_millis(16);
-    let mut prev_view: Option<(Nav, StateSnapshot, [u8; 4], usize, bool, Lang, bool, bool)> = None;
+    // Everything that affects a rendered frame; compared each loop to skip
+    // redundant `push_view` calls. The trailing three bools are the held IO-test
+    // output keys (wrap, knives-in, knives-out).
+    type ViewKey = (Nav, StateSnapshot, [u8; 4], usize, bool, Lang, bool, bool, bool);
+    let mut prev_view: Option<ViewKey> = None;
 
     loop {
         slint::platform::update_timers_and_animations();
@@ -589,17 +612,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match ev {
                     ButtonEvent::Pressed(b) => match remap_fkey(b) {
                         Button::F1 => io_wrap_held = true,
-                        Button::F2 => io_knife_held = true,
+                        Button::F2 => io_knives_in_held = true,
+                        Button::F3 => io_knives_out_held = true,
                         Button::F6 => {
                             io_wrap_held = false;
-                            io_knife_held = false;
+                            io_knives_in_held = false;
+                            io_knives_out_held = false;
                             nav = Nav::Main;
                         }
                         _ => {}
                     },
                     ButtonEvent::Released(b) => match remap_fkey(b) {
                         Button::F1 => io_wrap_held = false,
-                        Button::F2 => io_knife_held = false,
+                        Button::F2 => io_knives_in_held = false,
+                        Button::F3 => io_knives_out_held = false,
                         _ => {}
                     },
                 }
@@ -654,7 +680,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Button::F3 if service.unlocked() => {
                         // Open the PIN-gated IO test page (REQ_0018).
                         io_wrap_held = false;
-                        io_knife_held = false;
+                        io_knives_in_held = false;
+                        io_knives_out_held = false;
                         nav = Nav::IoTest;
                     }
                     Button::F4 => {
@@ -695,7 +722,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if nav == Nav::IoTest {
             backend.command(Command::ManualIo {
                 wrap: io_wrap_held,
-                knife: io_knife_held,
+                knives_in: io_knives_in_held,
+                knives_out: io_knives_out_held,
             });
         }
 
@@ -707,10 +735,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             service.ethernet_selected,
             lang,
             io_wrap_held,
-            io_knife_held,
+            io_knives_in_held,
+            io_knives_out_held,
         );
         if prev_view.as_ref() != Some(&view_key) {
-            push_view(&ui, nav, &snap, &service, lang, io_wrap_held, io_knife_held);
+            push_view(
+                &ui, nav, &snap, &service, lang, io_wrap_held, io_knives_in_held,
+                io_knives_out_held,
+            );
             prev_view = Some(view_key);
         }
 

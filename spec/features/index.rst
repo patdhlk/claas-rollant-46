@@ -98,8 +98,10 @@ stories, and the decisions that shape an implementation. Requirements
      and pulses the keypad backlight; the operator fires the 5 s pulse.
    - **Counting**: session + total increment once on clean pulse completion;
      interrupted pulses do not count.
-   - **Knife toggle**: fire-and-forget 5 s pulse on the button rising edge,
-     independent of knife input and of the wrap pulse (outputs may overlap).
+   - **Knife (directional)**: fire-and-forget 5 s pulse on the button rising edge,
+     ch2 (DI2) selects the direction — true → knives-in (DO2), false → knives-out
+     (DO3); the two are interlocked (never both on) but stay independent of the
+     wrap pulse (knife + wrap may overlap).
    - **Inputs** are debounced, edge-detected, status-only; bale-full clears with
      its input.
    - **Counters** persist via temp-file + ``rename`` on each change, reload on
@@ -118,9 +120,9 @@ stories, and the decisions that shape an implementation. Requirements
      F6 Service), four screens (Main / Service-PIN / Ethernet / Fault overlay),
      LED beacon (green idle, amber-pulse full, red fault, blue Ethernet, white
      flash on pulse), blinking done in software.
-   - **IO**: WAGO 750-354 / 750-430 / 750-530; DI1 = bale full, DI2 = knife
-     position (24 V = in); DO1 = wrap, DO2 = knife switch; data at process-image
-     byte offset 4; 10 ms scan, 50 ms watchdog; built on the taktora
+   - **IO**: WAGO 750-354 / 750-430 / 750-530; DI1 = bale full, DI2/ch2 = knife
+     position (24 V = in); DO1 = wrap, DO2 = knives-in, DO3 = knives-out; data at
+     process-image byte offset 4; 10 ms scan, 50 ms watchdog; built on the taktora
      ``ethercat-wago-coupler`` example.
    - **Build/deploy**: cargo workspace, cargo-zigbuild →
      ``aarch64-unknown-linux-musl``, two ``Restart=always`` systemd units

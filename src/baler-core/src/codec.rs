@@ -50,10 +50,13 @@ mod tests {
             bale_full: true,
             knife: KnifePos::Out,
             wrap_armed: true,
+            full_latched: true,
             wrap_active: false,
             knife_active: true,
             session: 17,
             total: 123_456,
+            di1: true,
+            di2: false,
             ip: [192, 168, 1, 102],
             ip_valid: true,
         }
@@ -82,6 +85,9 @@ mod tests {
             Command::ResetTotal,
             Command::EnterEthernet,
             Command::ReturnToEthercat,
+            Command::ManualIo { wrap: true, knife: false },
+            Command::ManualIo { wrap: false, knife: true },
+            Command::ManualIo { wrap: true, knife: true },
         ] {
             let len = codec.encode(&cmd, &mut buf).expect("encode");
             let decoded: Command = codec.decode(&buf[..len]).expect("decode");

@@ -123,9 +123,11 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    :status: open
    :refines: FEAT_0001
 
-   The UI shall present a softkey model — F1 Wrap (armed when full), F2 Toggle
-   Knives, F3 Reset Session, F6 Service — across Main, Service (PIN), Ethernet,
-   and Fault-overlay screens, with arrows and Enter for dialog navigation.
+   The UI shall present a softkey model — F1 Wrap (always available whenever the
+   machine is operational; the bale-full state is an advisory hint, not a gate —
+   firing a wrap is the operator's responsibility), F2 Toggle Knives, F3 Reset
+   Session, F6 Service — across Main, Service (PIN), Ethernet, and Fault-overlay
+   screens, with arrows and Enter for dialog navigation.
 
 .. req:: LED state beacon
    :id: REQ_0014
@@ -156,3 +158,42 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    ``aarch64-unknown-linux-musl`` and deployed as two ``Restart=always`` systemd
    units with the daemon ordered first, configured via ``/etc/baler/config.toml``
    with counters stored under ``/var/lib/baler/``.
+
+.. req:: Bale-full attention latch
+   :id: REQ_0017
+   :status: open
+   :refines: FEAT_0001
+
+   When the bale-full input (DI1) becomes true, the UI shall hold the "full"
+   indication for at least 20 s so the operator notices it even when looking
+   away, regardless of the input clearing sooner. Firing a wrap shall clear the
+   latch (the operator has handled it). The latch is an attention aid only; it
+   does not gate the wrap softkey (see REQ_0013).
+
+.. req:: Manual IO test mode
+   :id: REQ_0018
+   :status: open
+   :refines: FEAT_0001
+
+   The UI shall provide a PIN-gated IO test screen (reached from Service) that
+   lets the operator momentarily energize each output (hold-to-energize DO1 wrap,
+   DO2 knife) and observe the live, un-debounced inputs (DI1, DI2). While the
+   screen is active the daemon shall enter a manual-IO mode that suspends the
+   normal control state machine and drives outputs from the operator's held keys.
+   Manual outputs shall only be applied while the bus is operational. A command
+   watchdog shall de-energize all outputs and exit manual-IO mode if no manual-IO
+   command is received within a short window (≤ 300 ms), so a released key, a UI
+   crash, or a lost link always fails safe.
+
+.. req:: UI language toggle (English / German)
+   :id: REQ_0019
+   :status: open
+   :refines: FEAT_0001
+
+   The operator UI shall render all operator-facing labels from a per-language
+   string table and provide a PIN-free toggle (Service screen F4) between English
+   and German. The selection shall persist across power cycles (stored under
+   ``/var/lib/baler/``, ``/tmp`` fallback) and default to German when no valid
+   stored choice exists. The toggle softkey shall show the *other* language's
+   endonym so the operator knows what it switches to. The IO test screen (REQ_0018),
+   a technician aid, may remain English-only.

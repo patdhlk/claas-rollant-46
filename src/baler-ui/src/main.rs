@@ -17,6 +17,11 @@
 #[cfg(feature = "device")]
 mod platform;
 
+// EN/DE string tables (ISSUE_0005-0008). Pure data — compiled unconditionally so
+// its translation-guard tests run on the host; only the device UI consumes it.
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
+mod i18n;
+
 // ===========================================================================
 // Host stub: no slint, no cr1140-hal. Keeps `cargo build` green on the host.
 // ===========================================================================
@@ -98,10 +103,14 @@ impl LocalBackend {
                 Some(false) => KnifePos::Out,
             },
             wrap_armed: self.state.wrap_armed(),
+            // Standalone demo has no daemon latch; mirror the live full state.
+            full_latched: self.state.bale_full(),
             wrap_active: self.wrap.is_active(),
             knife_active: self.knife.is_active(),
             session: counts.session,
             total: counts.total,
+            di1: self.state.bale_full(),
+            di2: self.state.knife_in().unwrap_or(false),
             ip: self.last_ip.map(|i| i.octets()).unwrap_or([0, 0, 0, 0]),
             ip_valid: self.last_ip.is_some(),
         }
@@ -249,10 +258,13 @@ impl IpcBackend {
                 bale_full: false,
                 knife: KnifePos::Unknown,
                 wrap_armed: false,
+                full_latched: false,
                 wrap_active: false,
                 knife_active: false,
                 session: 0,
                 total: 0,
+                di1: false,
+                di2: false,
                 ip: [0, 0, 0, 0],
                 ip_valid: false,
             },
@@ -310,6 +322,7 @@ enum Nav {
     Service,
     Ethernet,
     Fault,
+    IoTest,
 }
 
 /// Resolve the screen the mode forces this frame, given where the operator
@@ -343,8 +356,50 @@ fn next_nav(current: Nav, mode: baler_core::Mode) -> Nav {
     }
 }
 
+// Language persistence (ISSUE_0008). Primary path survives reboots on the eMMC;
+// the /tmp fallback survives soft reboots within a session. Default German.
+#[cfg(feature = "device")]
+const LANG_PATH: &str = "/var/lib/baler/language";
+#[cfg(feature = "device")]
+const LANG_PATH_FALLBACK: &str = "/tmp/baler-language";
+
+/// Load the persisted language: primary path, then fallback, then German. A
+/// missing/unreadable/malformed file resolves to German via `from_code`, so it
+/// never crashes or blocks startup.
+#[cfg(feature = "device")]
+fn load_lang() -> crate::i18n::Lang {
+    use crate::i18n::Lang;
+    let try_read = |path: &str| -> Option<Lang> {
+        Some(Lang::from_code(std::fs::read_to_string(path).ok()?.trim()))
+    };
+    try_read(LANG_PATH)
+        .or_else(|| try_read(LANG_PATH_FALLBACK))
+        .unwrap_or_default()
+}
+
+/// Persist `lang` (two-byte code). Falls back to /tmp if the primary path is not
+/// writable; IO errors are logged and swallowed — the in-memory toggle still
+/// takes effect.
+#[cfg(feature = "device")]
+fn save_lang(lang: crate::i18n::Lang) {
+    let try_write = |path: &str| -> std::io::Result<()> {
+        let p = std::path::Path::new(path);
+        if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(p, lang.as_code())
+    };
+    if let Err(e) = try_write(LANG_PATH) {
+        eprintln!("baler-ui: could not write language to {LANG_PATH}: {e}; trying fallback");
+        if let Err(e2) = try_write(LANG_PATH_FALLBACK) {
+            eprintln!("baler-ui: language persists in-memory only: {e2}");
+        }
+    }
+}
+
 #[cfg(feature = "device")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::i18n::{self, Lang};
     use crate::platform::{FbPlatform, Xrgb8888};
     use baler_core::{Command, KnifePos, Mode, StateSnapshot};
     use cr1140_hal::display::FbDisplay;
@@ -412,20 +467,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut nav = Nav::Main;
     let mut service = ServiceState::new();
+    // Persisted EN/DE language (ISSUE_0005-0008); German default.
+    let mut lang = load_lang();
 
-    let mode_text = |m: Mode| -> &'static str {
+    let mode_text = |s: &i18n::Strings, m: Mode| -> &'static str {
         match m {
-            Mode::Initializing => "INITIALISING",
-            Mode::Operational => "OPERATIONAL",
-            Mode::Fault => "FAULT",
-            Mode::Ethernet => "ETHERNET",
+            Mode::Initializing => s.mode_initialising,
+            Mode::Operational => s.mode_operational,
+            Mode::Fault => s.mode_fault,
+            Mode::Ethernet => s.mode_ethernet,
         }
     };
-    let knife_text = |k: KnifePos| -> &'static str {
+    let knife_text = |s: &i18n::Strings, k: KnifePos| -> &'static str {
         match k {
-            KnifePos::Unknown => "UNKNOWN",
-            KnifePos::In => "IN",
-            KnifePos::Out => "OUT",
+            KnifePos::Unknown => s.knife_unknown,
+            KnifePos::In => s.knife_in,
+            KnifePos::Out => s.knife_out,
         }
     };
     let ip_text = |s: &StateSnapshot| -> String {
@@ -436,17 +493,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let push_view = |ui: &AppWindow, nav: Nav, snap: &StateSnapshot, service: &ServiceState| {
+    let push_view = |ui: &AppWindow,
+                     nav: Nav,
+                     snap: &StateSnapshot,
+                     service: &ServiceState,
+                     lang: Lang,
+                     io_wrap: bool,
+                     io_knife: bool| {
         let slint_screen = match nav {
             Nav::Main => Screen::Main,
             Nav::Service => Screen::Service,
             Nav::Ethernet => Screen::Ethernet,
             Nav::Fault => Screen::Fault,
+            Nav::IoTest => Screen::Iotest,
         };
+        // All labels come from the active language's table; the F4 toggle shows the
+        // *other* language's endonym so the operator knows what it switches to.
+        let s = i18n::table(lang);
+        let other = i18n::table(lang.other());
         ui.set_screen(slint_screen);
-        ui.set_mode_text(mode_text(snap.mode).into());
-        ui.set_bale_full(snap.bale_full);
-        ui.set_knife_text(knife_text(snap.knife).into());
+        ui.set_tr(I18n {
+            title: s.title.into(),
+            bale_full_banner: s.bale_full_banner.into(),
+            session_caption: s.session_caption.into(),
+            total_caption: s.total_caption.into(),
+            knife_caption: s.knife_caption.into(),
+            sk_wrap: s.sk_wrap.into(),
+            sk_wrapping: s.sk_wrapping.into(),
+            sk_knife_toggle: s.sk_knife_toggle.into(),
+            sk_knife_active: s.sk_knife_active.into(),
+            sk_reset_session: s.sk_reset_session.into(),
+            sk_service: s.sk_service.into(),
+            service_title: s.service_title.into(),
+            enter_pin: s.enter_pin.into(),
+            pin_hint: s.pin_hint.into(),
+            network_caption: s.network_caption.into(),
+            sk_reset_total: s.sk_reset_total.into(),
+            sk_use_ethernet: s.sk_use_ethernet.into(),
+            sk_use_ethercat: s.sk_use_ethercat.into(),
+            sk_io_test: s.sk_io_test.into(),
+            sk_language: other.language_name.into(),
+            sk_back: s.sk_back.into(),
+            eth_title: s.eth_title.into(),
+            eth_offline: s.eth_offline.into(),
+            static_ip_caption: s.static_ip_caption.into(),
+            sk_return_ethercat: s.sk_return_ethercat.into(),
+            fault_title: s.fault_title.into(),
+            fault_detail: s.fault_detail.into(),
+            fault_hint: s.fault_hint.into(),
+        });
+        ui.set_mode_text(mode_text(s, snap.mode).into());
+        ui.set_bale_full(snap.bale_full || snap.full_latched);
+        ui.set_knife_text(knife_text(s, snap.knife).into());
         ui.set_wrap_armed(snap.wrap_armed);
         ui.set_wrap_active(snap.wrap_active);
         ui.set_knife_active(snap.knife_active);
@@ -456,14 +554,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_ip_text(ip_text(snap).into());
         ui.set_pin_display(service.display().into());
         ui.set_ethernet_selected(service.ethernet_selected);
-        ui.set_fault_text("ETHERCAT LINK LOST".into());
+        ui.set_fault_text(s.fault_link_lost.into());
+        // IO test page (REQ_0018): live raw inputs + the outputs we are driving.
+        ui.set_di1(snap.di1);
+        ui.set_di2(snap.di2);
+        ui.set_out_wrap(io_wrap);
+        ui.set_out_knife(io_knife);
     };
 
-    push_view(&ui, nav, &snap, &service);
+    // IO test page (REQ_0018): which output keys are currently held. Momentary —
+    // the held bits are streamed to the daemon every frame while the page is open.
+    let mut io_wrap_held = false;
+    let mut io_knife_held = false;
+
+    push_view(&ui, nav, &snap, &service, lang, io_wrap_held, io_knife_held);
 
     let mut led = LedBeacon::new();
     let frame_period = Duration::from_millis(16);
-    let mut prev_view: Option<(Nav, StateSnapshot, [u8; 4], usize, bool)> = None;
+    let mut prev_view: Option<(Nav, StateSnapshot, [u8; 4], usize, bool, Lang, bool, bool)> = None;
 
     loop {
         slint::platform::update_timers_and_animations();
@@ -474,6 +582,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nav = next_nav(nav, snap.mode);
 
         while let Some(ev) = reader.poll_button()? {
+            // IO test page needs press AND release for momentary (hold-to-energize)
+            // outputs (REQ_0018), so it handles the raw event before the
+            // press-only filter below.
+            if nav == Nav::IoTest {
+                match ev {
+                    ButtonEvent::Pressed(b) => match remap_fkey(b) {
+                        Button::F1 => io_wrap_held = true,
+                        Button::F2 => io_knife_held = true,
+                        Button::F6 => {
+                            io_wrap_held = false;
+                            io_knife_held = false;
+                            nav = Nav::Main;
+                        }
+                        _ => {}
+                    },
+                    ButtonEvent::Released(b) => match remap_fkey(b) {
+                        Button::F1 => io_wrap_held = false,
+                        Button::F2 => io_knife_held = false,
+                        _ => {}
+                    },
+                }
+                continue;
+            }
             let ButtonEvent::Pressed(btn) = ev else {
                 continue;
             };
@@ -484,7 +615,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let btn = remap_fkey(btn);
             match nav {
                 Nav::Main => match btn {
-                    Button::F1 if snap.wrap_armed => backend.command(Command::Wrap),
+                    // F1 always fires a wrap — full is an advisory hint, not a gate;
+                    // firing is the operator's responsibility (REQ_0013).
+                    Button::F1 => backend.command(Command::Wrap),
                     Button::F2 => backend.command(Command::ToggleKnife),
                     Button::F3 => backend.command(Command::ResetSession),
                     Button::F4 => backend.sim_toggle_full(), // demo: simulate a full bale
@@ -518,6 +651,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Command::ReturnToEthercat
                         });
                     }
+                    Button::F3 if service.unlocked() => {
+                        // Open the PIN-gated IO test page (REQ_0018).
+                        io_wrap_held = false;
+                        io_knife_held = false;
+                        nav = Nav::IoTest;
+                    }
+                    Button::F4 => {
+                        // PIN-free EN/DE language toggle (ISSUE_0007); persisted
+                        // immediately so it survives a power cycle (ISSUE_0008).
+                        lang = lang.other();
+                        save_lang(lang);
+                    }
                     Button::F6 => {
                         service.reset();
                         nav = Nav::Main;
@@ -540,12 +685,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         nav = Nav::Service;
                     }
                 }
+                // Handled above (press + release) before the press-only filter.
+                Nav::IoTest => {}
             }
         }
 
-        let view_key = (nav, snap, service.pin, service.cursor, service.ethernet_selected);
+        // While the IO test page is open, stream the held-key bits to the daemon
+        // every frame. The daemon's watchdog de-energizes if this stops (REQ_0018).
+        if nav == Nav::IoTest {
+            backend.command(Command::ManualIo {
+                wrap: io_wrap_held,
+                knife: io_knife_held,
+            });
+        }
+
+        let view_key = (
+            nav,
+            snap,
+            service.pin,
+            service.cursor,
+            service.ethernet_selected,
+            lang,
+            io_wrap_held,
+            io_knife_held,
+        );
         if prev_view.as_ref() != Some(&view_key) {
-            push_view(&ui, nav, &snap, &service);
+            push_view(&ui, nav, &snap, &service, lang, io_wrap_held, io_knife_held);
             prev_view = Some(view_key);
         }
 
@@ -674,5 +839,14 @@ mod tests {
     fn operational_leaves_operator_screens_untouched() {
         assert_eq!(next_nav(Nav::Main, Mode::Operational), Nav::Main);
         assert_eq!(next_nav(Nav::Service, Mode::Operational), Nav::Service);
+    }
+
+    #[test]
+    fn io_test_page_persists_while_operational_but_yields_to_a_fault() {
+        // The operator stays on the IO test page while the bus is up (REQ_0018)...
+        assert_eq!(next_nav(Nav::IoTest, Mode::Operational), Nav::IoTest);
+        assert_eq!(next_nav(Nav::IoTest, Mode::Initializing), Nav::IoTest);
+        // ...but a Fault (bus down) takes over — manual IO is meaningless then.
+        assert_eq!(next_nav(Nav::IoTest, Mode::Fault), Nav::Fault);
     }
 }

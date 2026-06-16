@@ -39,6 +39,10 @@ pub enum Command {
     EnterEthernet,
     /// Return from Ethernet mode and re-init EtherCAT (REQ_0009).
     ReturnToEthercat,
+    /// IO test screen: drive the outputs directly from the operator's held keys
+    /// (momentary). Sent every frame while the page is open; its absence is what
+    /// the daemon's watchdog uses to fail safe (REQ_0018).
+    ManualIo { wrap: bool, knife: bool },
 }
 
 /// Knife position as reported by DI2, or unknown while the bus is down.
@@ -55,12 +59,20 @@ pub struct StateSnapshot {
     pub mode: Mode,
     pub bale_full: bool,
     pub knife: KnifePos,
-    /// True when a wrap is permitted and the bale is full (arms the F1 softkey).
+    /// Advisory hint: the bale is full and a wrap is permitted. No longer gates the
+    /// F1 softkey — firing a wrap is the operator's responsibility (REQ_0013).
     pub wrap_armed: bool,
+    /// Bale-full attention latch: held true for at least 20 s after a true DI1 so
+    /// the operator notices, cleared early by a wrap (REQ_0017).
+    pub full_latched: bool,
     pub wrap_active: bool,
     pub knife_active: bool,
     pub session: u64,
     pub total: u64,
+    /// Raw (un-debounced) discrete inputs for the IO test screen (REQ_0018):
+    /// `di1` = bale-full sensor, `di2` = knife-position sensor.
+    pub di1: bool,
+    pub di2: bool,
     /// Static IP shown in Ethernet mode (REQ_0009); valid only when `ip_valid`.
     pub ip: [u8; 4],
     pub ip_valid: bool,

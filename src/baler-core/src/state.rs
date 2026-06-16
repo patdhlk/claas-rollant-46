@@ -127,6 +127,10 @@ impl BalerState {
                     Err(Reject::NotInEthernet)
                 }
             }
+            // The IO test screen bypasses the state machine entirely — the daemon
+            // intercepts `ManualIo` before it reaches here (REQ_0018). Reject
+            // defensively so this never silently drives the machine.
+            Command::ManualIo { .. } => Err(Reject::NotReady),
         }
     }
 

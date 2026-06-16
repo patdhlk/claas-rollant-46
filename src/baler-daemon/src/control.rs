@@ -22,6 +22,12 @@ use crate::ports::{BusController, Inputs, NetworkController, Outputs};
 const SCAN: Duration = Duration::from_millis(10);
 const DEBOUNCE: u8 = 3; // ~30 ms at the 10 ms scan
 const PULSE: Duration = Duration::from_secs(5);
+/// Bale-full attention latch: hold "FULL" for >= 20 s after a true DI1 so the
+/// operator notices even when looking away (REQ_0017). 20 s / 10 ms = 2000 cycles.
+const FULL_LATCH_CYCLES: u32 = 2000;
+/// Manual-IO command watchdog: outputs de-energize and the mode exits if no
+/// `ManualIo` arrives within this many cycles — 30 × 10 ms = 300 ms (REQ_0018).
+const MANUAL_IO_WATCHDOG: u32 = 30;
 
 /// Owns the control-cycle state. One `step` per 10 ms scan.
 pub struct Control {
@@ -32,6 +38,18 @@ pub struct Control {
     full_db: Debouncer,
     knife_db: Debouncer,
     last_ip: Option<Ipv4Addr>,
+    /// Bale-full attention latch: cycles remaining that "FULL" stays shown after a
+    /// rising debounced DI1, cleared early by a wrap (REQ_0017).
+    full_latch_remaining: u32,
+    /// Raw (un-debounced) discrete inputs, surfaced for the IO test screen (REQ_0018).
+    last_di1: bool,
+    last_di2: bool,
+    /// Manual-IO mode (REQ_0018): cycles remaining before the command watchdog
+    /// fails safe. >0 means the IO test screen is driving the outputs directly;
+    /// `manual_wrap`/`manual_knife` are the latest operator-held bits.
+    manual_io_remaining: u32,
+    manual_wrap: bool,
+    manual_knife: bool,
 }
 
 impl Control {
@@ -45,6 +63,12 @@ impl Control {
             full_db: Debouncer::new(DEBOUNCE, false),
             knife_db: Debouncer::new(DEBOUNCE, false),
             last_ip: None,
+            full_latch_remaining: 0,
+            last_di1: false,
+            last_di2: false,
+            manual_io_remaining: 0,
+            manual_wrap: false,
+            manual_knife: false,
         })
     }
 
@@ -61,17 +85,45 @@ impl Control {
         bus: &mut dyn BusController,
     ) -> (Outputs, StateSnapshot) {
         self.state.on_bus_health(inputs.healthy);
+        // Raw inputs for the IO test screen (un-debounced; REQ_0018).
+        self.last_di1 = inputs.bale_full;
+        self.last_di2 = inputs.knife_in;
         self.full_db.update(inputs.bale_full);
         self.knife_db.update(inputs.knife_in);
         if inputs.healthy {
             self.state.on_inputs(self.full_db.level(), self.knife_db.level());
         }
 
+        // Bale-full attention latch (REQ_0017): (re)arm while debounced DI1 is
+        // true, otherwise count down. `full_latched` (in the snapshot) stays true
+        // for >= 20 s after the last true sample so the operator notices.
+        if inputs.healthy && self.full_db.level() {
+            self.full_latch_remaining = FULL_LATCH_CYCLES;
+        } else if self.full_latch_remaining > 0 {
+            self.full_latch_remaining -= 1;
+        }
+
+        let mut got_manual = false;
         for cmd in commands {
+            // IO test screen (REQ_0018): intercept before the state machine. Its
+            // presence (re)arms the watchdog; while in manual-IO mode the normal
+            // control state machine is suspended.
+            if let Command::ManualIo { wrap, knife } = cmd {
+                got_manual = true;
+                self.manual_wrap = wrap;
+                self.manual_knife = knife;
+                continue;
+            }
+            if self.manual_io_remaining > 0 {
+                continue; // manual-IO mode: ignore machine/mode commands
+            }
             let any_active = self.wrap.is_active() || self.knife.is_active();
             match self.state.handle(cmd, any_active) {
                 Ok(Action::FireWrap) => {
                     self.wrap.trigger();
+                    // The operator handled the full bale — clear the attention
+                    // latch so it stops nagging (REQ_0017).
+                    self.full_latch_remaining = 0;
                 }
                 Ok(Action::FireKnife) => {
                     self.knife.trigger();
@@ -103,18 +155,37 @@ impl Control {
             }
         }
 
-        // Independent pulses; a wrap counts only on clean completion (REQ_0004).
-        if let PulseEvent::Completed = self.wrap.tick(SCAN, inputs.healthy) {
-            if let Err(e) = self.counters.increment_wrap() {
-                // A failed persist must not crash the safety loop; log and carry on.
-                eprintln!("[control] wrap counter persist failed: {e}");
-            }
+        // Manual-IO watchdog (REQ_0018): a fresh `ManualIo` (re)arms it; otherwise
+        // it counts down and fails safe at zero. A released key, the operator
+        // leaving the page, a UI crash, or a lost link all stop the stream and
+        // de-energize the outputs within the window.
+        if got_manual {
+            self.manual_io_remaining = MANUAL_IO_WATCHDOG;
+        } else if self.manual_io_remaining > 0 {
+            self.manual_io_remaining -= 1;
         }
-        let _ = self.knife.tick(SCAN, inputs.healthy);
 
-        let outputs = Outputs {
-            wrap: self.wrap.output(),
-            knife: self.knife.output(),
+        let outputs = if self.manual_io_remaining > 0 {
+            // Manual-IO mode: drive outputs straight from the operator's held keys,
+            // but only while the bus is up — never energize into a faulted bus.
+            Outputs {
+                wrap: inputs.healthy && self.manual_wrap,
+                knife: inputs.healthy && self.manual_knife,
+            }
+        } else {
+            // Normal control: independent pulses; a wrap counts only on clean
+            // completion (REQ_0004).
+            if let PulseEvent::Completed = self.wrap.tick(SCAN, inputs.healthy) {
+                if let Err(e) = self.counters.increment_wrap() {
+                    // A failed persist must not crash the safety loop; log and carry on.
+                    eprintln!("[control] wrap counter persist failed: {e}");
+                }
+            }
+            let _ = self.knife.tick(SCAN, inputs.healthy);
+            Outputs {
+                wrap: self.wrap.output(),
+                knife: self.knife.output(),
+            }
         };
         (outputs, self.snapshot())
     }
@@ -130,10 +201,13 @@ impl Control {
                 Some(false) => KnifePos::Out,
             },
             wrap_armed: self.state.wrap_armed(),
+            full_latched: self.full_latch_remaining > 0,
             wrap_active: self.wrap.is_active(),
             knife_active: self.knife.is_active(),
             session: counts.session,
             total: counts.total,
+            di1: self.last_di1,
+            di2: self.last_di2,
             ip: self.last_ip.map(|i| i.octets()).unwrap_or([0, 0, 0, 0]),
             ip_valid: self.last_ip.is_some(),
         }
@@ -232,6 +306,131 @@ mod tests {
         let (_, s3) = c.step(full(), vec![], &mut net, &mut bus);
         assert!(s3.bale_full, "third sustained sample crosses the debounce");
         assert!(s3.wrap_armed, "full + operational arms the wrap softkey");
+    }
+
+    #[test]
+    fn bale_full_latches_for_at_least_20s_after_di1_clears() {
+        let mut c = Control::new(scratch("fulllatch")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+
+        // Sustained full crosses the debounce and latches the FULL indication.
+        c.step(full(), vec![], &mut net, &mut bus);
+        c.step(full(), vec![], &mut net, &mut bus);
+        let (_, s) = c.step(full(), vec![], &mut net, &mut bus);
+        assert!(s.full_latched, "a debounced bale-full latches FULL");
+
+        // DI1 clears immediately — the latch must hold.
+        let (_, s) = c.step(healthy(), vec![], &mut net, &mut bus);
+        assert!(s.full_latched, "latch holds right after DI1 drops");
+
+        // Still latched ~10 s in (1000 cycles of DI1 low).
+        let mut snap = s;
+        for _ in 0..1000 {
+            let (_, x) = c.step(healthy(), vec![], &mut net, &mut bus);
+            snap = x;
+        }
+        assert!(snap.full_latched, "still latched ~10 s after DI1 cleared");
+
+        // After >= 20 s total it releases.
+        for _ in 0..1100 {
+            let (_, x) = c.step(healthy(), vec![], &mut net, &mut bus);
+            snap = x;
+        }
+        assert!(!snap.full_latched, "latch releases after >= 20 s");
+    }
+
+    #[test]
+    fn firing_a_wrap_clears_the_full_latch() {
+        let mut c = Control::new(scratch("wrapclears")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(full(), vec![], &mut net, &mut bus);
+        c.step(full(), vec![], &mut net, &mut bus);
+        let (_, s) = c.step(full(), vec![], &mut net, &mut bus);
+        assert!(s.full_latched, "latched after a debounced full");
+
+        let (_, s) = c.step(healthy(), vec![Command::Wrap], &mut net, &mut bus);
+        assert!(
+            !s.full_latched,
+            "a wrap clears the FULL latch — the operator handled it"
+        );
+    }
+
+    #[test]
+    fn manual_io_drives_outputs_directly() {
+        let mut c = Control::new(scratch("manualon")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        let (out, _) = c.step(
+            healthy(),
+            vec![Command::ManualIo { wrap: true, knife: false }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(out.wrap, "manual-IO energizes DO1 directly");
+        assert!(!out.knife);
+
+        let (out, _) = c.step(
+            healthy(),
+            vec![Command::ManualIo { wrap: false, knife: true }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(!out.wrap);
+        assert!(out.knife, "manual-IO energizes DO2 directly");
+    }
+
+    #[test]
+    fn manual_io_watchdog_de_energizes_and_restores_control_when_commands_stop() {
+        let mut c = Control::new(scratch("manualwd")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        let (out, _) = c.step(
+            healthy(),
+            vec![Command::ManualIo { wrap: true, knife: true }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(out.wrap && out.knife, "manual-IO energizes both outputs");
+
+        // Stop sending ManualIo — within the watchdog window the outputs fall.
+        let mut out = out;
+        for _ in 0..MANUAL_IO_WATCHDOG {
+            let (o, _) = c.step(healthy(), vec![], &mut net, &mut bus);
+            out = o;
+        }
+        assert!(
+            !out.wrap && !out.knife,
+            "watchdog de-energizes the outputs when the ManualIo stream stops"
+        );
+
+        // Normal control is restored: a Wrap is honoured again.
+        let (o, snap) = c.step(healthy(), vec![Command::Wrap], &mut net, &mut bus);
+        assert!(o.wrap, "normal control resumes after the watchdog exits manual-IO");
+        assert!(snap.wrap_active);
+    }
+
+    #[test]
+    fn manual_io_outputs_suppressed_when_bus_unhealthy() {
+        let mut c = Control::new(scratch("manualunhealthy")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus);
+
+        // Bus down: manual-IO must not energize anything.
+        let down = Inputs { bale_full: false, knife_in: false, healthy: false };
+        let (out, _) = c.step(
+            down,
+            vec![Command::ManualIo { wrap: true, knife: true }],
+            &mut net,
+            &mut bus,
+        );
+        assert!(!out.wrap && !out.knife, "manual-IO never drives a faulted bus");
     }
 
     #[test]

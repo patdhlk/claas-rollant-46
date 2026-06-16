@@ -479,3 +479,107 @@ done | wontfix. Edit status in place — git history is the audit trail.
 
    The code re-architecture + race fix are complete and host/cross validated;
    closing on that basis with the on-device run tracked in this note.
+
+.. issue:: Operator-flow features: F1-always, full-attention latch, IO test page
+   :id: ISSUE_0012
+   :status: done
+   :kind: feature
+   :links: REQ_0013, REQ_0017, REQ_0018
+
+   **What.** Three operator-requested features for the panel (design agreed
+   2026-06-15), to be implemented test-first.
+
+   **1. F1 wrap always available (REQ_0013).** Firing a wrap is the operator's
+   responsibility. Drop the ``if snap.wrap_armed`` guard on the ``baler-ui`` F1
+   handler so F1 always issues ``Command::Wrap``; the daemon already accepts it
+   whenever ``Operational`` (``state.rs`` gates only on operational, not on
+   ``bale_full``). ``wrap_armed`` becomes a purely advisory on-screen hint.
+
+   **2. Bale-full attention latch (REQ_0017).** Operators sometimes look away, so
+   a true DI1 must stay visible. Add a latch in ``control.rs``: a rising debounced
+   DI1 starts a ≥20 s countdown (2000 × 10 ms cycles); a new ``StateSnapshot``
+   field ``full_latched`` is true while it runs and the Main screen renders "FULL"
+   from it. A wrap firing (``Action::FireWrap``) clears the latch early; DI1
+   dropping sooner does not. Pure/host-testable with synthetic ticks.
+
+   **3. Manual IO test page (REQ_0018).** A PIN-gated ``Nav::IoTest`` screen
+   (new ``Screen::IoTest``) reached from Service. Outputs are momentary: the UI
+   tracks held F1/F2 (the HAL emits ``Pressed``/``Released``) and each frame sends
+   ``Command::ManualIo { wrap, knife }`` with the held bits. The daemon enters a
+   manual-IO mode on receiving ``ManualIo`` — the normal state machine is suspended
+   and outputs are driven from the latest bits — guarded by a command watchdog
+   (≤ 300 ms): if the stream stops (operator leaves the page, key released, UI
+   crash, link drop) outputs de-energize and normal control resumes. Manual outputs
+   apply only while ``Operational``. Add raw ``di1``/``di2`` bits to the snapshot so
+   the page shows live, un-debounced inputs. ``Command`` is now a ``serde`` enum
+   (post-ISSUE_0011), so the new fielded variant needs no special layout.
+
+   **Blocked by.** None. Implement via ``/tdd`` (host tests for the latch, the
+   manual-IO watchdog/mode, and ``next_nav`` IoTest routing; cross-build the
+   device/transport feature sets).
+
+   **Implementation (2026-06-15, host + cross tested; on-device IO-page check
+   pending).** All three shipped test-first.
+
+   *F1 always (REQ_0013).* Dropped the ``if snap.wrap_armed`` guard on the
+   ``baler-ui`` Main F1 handler — F1 always issues ``Command::Wrap``; the daemon
+   already accepts it whenever ``Operational``. ``wrap_armed`` is now a pure hint.
+
+   *Full latch (REQ_0017).* ``control.rs`` holds a ``full_latch_remaining``
+   countdown (``FULL_LATCH_CYCLES = 2000`` = 20 s) re-armed while debounced DI1 is
+   true and counted down after; new snapshot field ``full_latched`` drives the
+   Main "FULL" indicator. A wrap (``Action::FireWrap``) clears it early. Tests:
+   holds ≥20 s after DI1 clears; a wrap clears it.
+
+   *Manual IO test page (REQ_0018).* New ``Command::ManualIo { wrap, knife }``
+   (serde enum, no layout constraints post-ISSUE_0011), intercepted in
+   ``control.rs`` before the state machine. Receiving it (re)arms a 300 ms
+   watchdog (``MANUAL_IO_WATCHDOG = 30``) and suspends normal control, driving
+   outputs straight from the bits — but only while ``Operational``. When the
+   stream stops the watchdog de-energizes and resumes normal control. Snapshot
+   gained raw ``di1``/``di2``. UI: ``Nav::IoTest`` + ``Screen::iotest`` (Slint),
+   reached from Service via PIN-gated F3; the loop tracks held F1/F2 (HAL
+   ``Pressed``/``Released``) and streams ``ManualIo`` every frame, F6 exits.
+   Tests: manual-IO drives outputs; watchdog de-energizes + restores control when
+   the stream stops; outputs suppressed on an unhealthy bus; ``next_nav`` keeps
+   IoTest while operational and yields to a Fault.
+
+   Host green (baler-core 31, daemon 15, ui 7); cross-built clean (gnu) for
+   baler-daemon ``hardware`` and baler-ui ``device`` + ``hardware``. On-device
+   validation of the IO page (momentary energize, live inputs, fail-safe on exit)
+   is the remaining manual check.
+
+.. issue:: Restore the EN/DE language toggle onto the current UI
+   :id: ISSUE_0013
+   :status: done
+   :kind: feature
+   :links: REQ_0019
+
+   **What.** The English/German language toggle (full i18n of the operator UI,
+   persisted, German default) existed on the unmerged ``feat/ui-language-toggle``
+   branch but was never on ``main`` — so the deployed transport UI had no language
+   switch. Restore it onto the current UI (which has since gained the transport
+   re-architecture, the IO test page, and the ``next_nav`` rework), resolving the
+   collisions the stale branch could not be merged through.
+
+   **Implementation (2026-06-16).** Brought ``src/baler-ui/src/i18n.rs`` forward
+   (``Lang`` En/De, ``Strings`` table, EN/DE, persistence helpers) and extended it
+   for the two labels the branch predated — the Service ``IO TEST`` softkey and the
+   Fault ``F6 → Service`` hint; its translation-guard tests (every field non-empty,
+   EN ≠ DE, field-count) pass on the host (15 i18n tests). Converted every
+   operator-screen label in ``baler.slint`` to an ``I18n`` (``tr``) struct set as a
+   whole from Rust each frame; ``main.rs`` resolves mode/knife/fault text and the
+   ``tr`` struct from the active table, loads/saves the choice
+   (``/var/lib/baler/language`` + ``/tmp`` fallback, German default), and toggles on
+   **Service F4** (PIN-free, persisted immediately). ``lang`` is part of the view
+   dedup key so a toggle repaints instantly.
+
+   **Key-collision resolution.** The branch toggled language on Service F3, but
+   ISSUE_0012 put the IO test entry there. Per the agreed decision the IO test
+   stays on **F3** (PIN-gated) and the language toggle moved to **F4** (PIN-free).
+   The IO test page itself stays English (technician screen; REQ_0018).
+
+   Host green (baler-ui 22 incl. 15 i18n); cross-built clean (gnu) for baler-ui
+   ``device`` + ``hardware``. The stale ``feat/ui-language-toggle`` branch (and its
+   colliding ISSUE_0005-0008 / REQ_0017-0019 / FEAT_0002 spec IDs) is superseded by
+   this issue and REQ_0019 and can be deleted.

@@ -14,6 +14,9 @@ use std::net::Ipv4Addr;
 pub struct Inputs {
     pub bale_full: bool,
     pub knife_in: bool,
+    /// DI3/ch3: true when the baler is completely open (bale ejected). Its rising
+    /// edge is the authoritative bale-count trigger (REQ_0004).
+    pub bale_open: bool,
     /// EtherCAT connector health for this cycle.
     pub healthy: bool,
 }
@@ -153,6 +156,7 @@ impl BusIo for SimBus {
         Inputs {
             bale_full: phase >= 16,
             knife_in: false,
+            bale_open: false,
             healthy: true,
         }
     }

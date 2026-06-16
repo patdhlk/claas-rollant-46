@@ -36,14 +36,16 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    the rising edge of the operator wrap button, and shall never auto-wrap from
    the bale-full signal.
 
-.. req:: Wrap counting on clean completion
+.. req:: Bale counting on the baler-open edge
    :id: REQ_0004
    :status: open
    :refines: FEAT_0001
 
-   The session and total counters shall each increment by one on clean
-   completion of a wrap pulse. A pulse aborted by bus loss or daemon restart
-   shall not increment any counter.
+   The session and total counters shall each increment by one on the debounced
+   rising edge of the baler-fully-open input (DI3/ch3) — one ejected bale per
+   open — counted only while the bus is healthy, so an input asserted during a
+   fault (or held across recovery, with no fresh edge) shall not count. The wrap
+   pulse no longer drives counting.
 
 .. req:: Directional knife pulse (in/out)
    :id: REQ_0005
@@ -62,9 +64,10 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    :status: open
    :refines: FEAT_0001
 
-   The daemon shall debounce the bale-full and knife-position inputs and detect
-   their rising edges. Inputs are status-only; the bale-full indication shall
-   clear automatically when its input clears.
+   The daemon shall debounce the bale-full, knife-position, and baler-fully-open
+   (DI3/ch3) inputs and detect their rising edges. Inputs are status-only; the
+   bale-full indication shall clear automatically when its input clears, and the
+   baler-open rising edge shall drive bale counting (REQ_0004).
 
 .. req:: Counter persistence and reset rules
    :id: REQ_0007
@@ -73,8 +76,10 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
 
    Counters shall persist across power loss via an atomic write (temp file plus
    rename) on each change and reload on boot. The session counter shall reset
-   only on explicit operator action; the total counter reset shall be available
-   only behind the PIN-gated service screen.
+   only on explicit operator action; the operator may also manually correct the
+   session counter by ±1 (Main F4 = +1, F5 = −1) — the total is never touched and
+   a decrement saturates at zero. The total counter reset shall be available only
+   behind the PIN-gated service screen.
 
 .. req:: Idle-only mode switch
    :id: REQ_0008
@@ -152,10 +157,10 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    :refines: FEAT_0001
 
    IO shall use the WAGO 750-354 coupler with a 750-430 input module
-   (DI1 = bale full, DI2/ch2 = knife position with 24 V = knives in) and a 750-530
-   output module (DO1 = wrap, DO2 = knives-in, DO3 = knives-out), with process data
-   at byte offset 4, a 10 ms scan, and a 50 ms SM watchdog, built on the taktora
-   ethercat-wago-coupler example.
+   (DI1 = bale full, DI2/ch2 = knife position with 24 V = knives in, DI3/ch3 =
+   baler fully open) and a 750-530 output module (DO1 = wrap, DO2 = knives-in,
+   DO3 = knives-out), with process data at byte offset 4, a 10 ms scan, and a
+   50 ms SM watchdog, built on the taktora ethercat-wago-coupler example.
 
 .. req:: Build and deployment
    :id: REQ_0016
@@ -186,7 +191,7 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    The UI shall provide a PIN-gated IO test screen (reached from Service) that
    lets the operator momentarily energize each output (hold-to-energize DO1 wrap,
    DO2 knives-in, DO3 knives-out) and observe the live, un-debounced inputs
-   (DI1, DI2). While the screen is active the daemon shall enter a manual-IO mode
+   (DI1, DI2, DI3). While the screen is active the daemon shall enter a manual-IO mode
    that suspends the normal control state machine and drives outputs from the
    operator's held keys, with the two knife outputs interlocked so DO2 and DO3 are
    never energized together.

@@ -53,8 +53,6 @@ trait Backend {
     fn step(&mut self) -> baler_core::StateSnapshot;
     /// Issue an operator command.
     fn command(&mut self, cmd: baler_core::Command);
-    /// Demo-only: toggle a simulated "bale full" input. No-op for the daemon path.
-    fn sim_toggle_full(&mut self) {}
 }
 
 // ---- in-process backend: the real baler-core logic, simulated inputs --------
@@ -65,9 +63,14 @@ struct LocalBackend {
     knives_in: baler_core::pulse::PulseEngine,
     knives_out: baler_core::pulse::PulseEngine,
     counters: baler_core::counter::CounterStore,
-    sim_full: bool,
     sim_knife_in: bool,
+    /// Simulated DI3 (baler fully open). The demo pulses it for one cycle when a
+    /// wrap completes, so a bale is ejected → counted, mirroring the real DI3 edge.
+    sim_bale_open: bool,
     last_ip: Option<std::net::Ipv4Addr>,
+    /// Fixed start instant — the demo auto-cycles the simulated bale-full input off
+    /// it (full 8 s every 24 s) now that F4/F5 are the operator session correction.
+    start: std::time::Instant,
     last: std::time::Instant,
 }
 
@@ -86,9 +89,10 @@ impl LocalBackend {
                     // Fall back to a temp path if /var/lib is not writable.
                     baler_core::counter::CounterStore::load("/tmp/baler-counters").unwrap()
                 }),
-            sim_full: false,
             sim_knife_in: false,
+            sim_bale_open: false,
             last_ip: None,
+            start: std::time::Instant::now(),
             last: std::time::Instant::now(),
         }
     }
@@ -113,6 +117,7 @@ impl LocalBackend {
             total: counts.total,
             di1: self.state.bale_full(),
             di2: self.state.knife_in().unwrap_or(false),
+            di3: self.sim_bale_open,
             ip: self.last_ip.map(|i| i.octets()).unwrap_or([0, 0, 0, 0]),
             ip_valid: self.last_ip.is_some(),
         }
@@ -128,10 +133,19 @@ impl Backend for LocalBackend {
         self.last = now;
 
         self.state.on_bus_health(true);
-        self.state.on_inputs(self.sim_full, self.sim_knife_in);
+        // Auto-cycle the simulated bale-full input (full 8 s every 24 s), so the
+        // demo still shows the full → wrap flow without a softkey.
+        let sim_full = (self.start.elapsed().as_secs() % 24) >= 16;
+        self.state.on_inputs(sim_full, self.sim_knife_in);
 
+        // The wrap pulse no longer counts. Instead the demo ejects a bale when a
+        // wrap completes: pulse the simulated DI3 (baler-open) for one cycle, and
+        // count on that edge — mirroring the daemon, which counts the real DI3 edge.
         if let PulseEvent::Completed = self.wrap.tick(dt, true) {
-            let _ = self.counters.increment_wrap();
+            self.sim_bale_open = true;
+            let _ = self.counters.increment_bale();
+        } else {
+            self.sim_bale_open = false;
         }
         // Either directional pulse completing simulates the knives physically
         // flipping, so successive presses exercise both DO2 and DO3 in the demo.
@@ -165,6 +179,9 @@ impl Backend for LocalBackend {
             Ok(Action::ResetSession) => {
                 let _ = self.counters.reset_session();
             }
+            Ok(Action::AdjustSession(delta)) => {
+                let _ = self.counters.adjust_session(delta as i64);
+            }
             Ok(Action::ResetTotal) => {
                 let _ = self.counters.reset_total();
             }
@@ -174,10 +191,6 @@ impl Backend for LocalBackend {
             Ok(Action::SwitchToEthercat) => self.last_ip = None,
             Err(_) => {}
         }
-    }
-
-    fn sim_toggle_full(&mut self) {
-        self.sim_full = !self.sim_full;
     }
 }
 
@@ -279,6 +292,7 @@ impl IpcBackend {
                 total: 0,
                 di1: false,
                 di2: false,
+                di3: false,
                 ip: [0, 0, 0, 0],
                 ip_valid: false,
             },
@@ -538,6 +552,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sk_knife_toggle: s.sk_knife_toggle.into(),
             sk_knife_active: s.sk_knife_active.into(),
             sk_reset_session: s.sk_reset_session.into(),
+            sk_session_plus: s.sk_session_plus.into(),
+            sk_session_minus: s.sk_session_minus.into(),
             sk_service: s.sk_service.into(),
             service_title: s.service_title.into(),
             enter_pin: s.enter_pin.into(),
@@ -573,6 +589,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // IO test page (REQ_0018): live raw inputs + the outputs we are driving.
         ui.set_di1(snap.di1);
         ui.set_di2(snap.di2);
+        ui.set_di3(snap.di3);
         ui.set_out_wrap(io_wrap);
         ui.set_out_knives_in(io_knives_in);
         ui.set_out_knives_out(io_knives_out);
@@ -646,7 +663,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Button::F1 => backend.command(Command::Wrap),
                     Button::F2 => backend.command(Command::ToggleKnife),
                     Button::F3 => backend.command(Command::ResetSession),
-                    Button::F4 => backend.sim_toggle_full(), // demo: simulate a full bale
+                    // Manual session correction (operator ±1, REQ_0007).
+                    Button::F4 => backend.command(Command::AdjustSession { delta: 1 }),
+                    Button::F5 => backend.command(Command::AdjustSession { delta: -1 }),
                     Button::F6 => {
                         service.reset();
                         nav = Nav::Service;

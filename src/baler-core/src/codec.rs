@@ -57,6 +57,7 @@ mod tests {
             total: 123_456,
             di1: true,
             di2: false,
+            di3: true,
             ip: [192, 168, 1, 102],
             ip_valid: true,
         }
@@ -88,6 +89,8 @@ mod tests {
             Command::ManualIo { wrap: true, knives_in: false, knives_out: false },
             Command::ManualIo { wrap: false, knives_in: true, knives_out: false },
             Command::ManualIo { wrap: true, knives_in: false, knives_out: true },
+            Command::AdjustSession { delta: 1 },
+            Command::AdjustSession { delta: -1 },
         ] {
             let len = codec.encode(&cmd, &mut buf).expect("encode");
             let decoded: Command = codec.decode(&buf[..len]).expect("decode");

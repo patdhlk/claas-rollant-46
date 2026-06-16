@@ -51,6 +51,10 @@ pub enum Command {
         knives_in: bool,
         knives_out: bool,
     },
+    /// Manually correct the session counter by `delta` (operator ±1, REQ_0007).
+    /// Only the session moves; the total is never touched. Appended last so the
+    /// existing variants keep their postcard discriminants.
+    AdjustSession { delta: i8 },
 }
 
 /// Knife position as reported by DI2, or unknown while the bus is down.
@@ -78,9 +82,11 @@ pub struct StateSnapshot {
     pub session: u64,
     pub total: u64,
     /// Raw (un-debounced) discrete inputs for the IO test screen (REQ_0018):
-    /// `di1` = bale-full sensor, `di2` = knife-position sensor.
+    /// `di1` = bale-full sensor, `di2` = knife-position sensor, `di3` =
+    /// baler-fully-open sensor (the bale-eject signal that drives counting).
     pub di1: bool,
     pub di2: bool,
+    pub di3: bool,
     /// Static IP shown in Ethernet mode (REQ_0009); valid only when `ip_valid`.
     pub ip: [u8; 4],
     pub ip_valid: bool,

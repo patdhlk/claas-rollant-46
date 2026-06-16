@@ -55,6 +55,7 @@ const DO_BITS: u16 = 8;
 // IO map within the single data byte. bit0 = channel1, bit1 = channel2.
 const BIT_BALE_FULL: u8 = 0; // DI1
 const BIT_KNIFE_IN: u8 = 1; // DI2 (true = knives in)
+const BIT_BALE_OPEN: u8 = 2; // DI3 (true = baler fully open / bale ejected)
 const BIT_WRAP: u8 = 0; // DO1
 const BIT_KNIVES_IN: u8 = 1; // DO2 (fired when ch2/DI2 is true)
 const BIT_KNIVES_OUT: u8 = 2; // DO3 (fired when ch2/DI2 is false)
@@ -277,8 +278,8 @@ impl WagoBus {
             && self.health.load(Ordering::Acquire) == kind_to_u8(ConnectorHealthKind::Up)
     }
 
-    /// Drain the input channel and decode the latest DI1/DI2 + connector health
-    /// for this scan cycle.
+    /// Drain the input channel and decode the latest DI1/DI2/DI3 + connector
+    /// health for this scan cycle.
     pub fn poll(&mut self) -> Inputs {
         // Suspended (Ethernet maintenance mode): the connector is torn down, so the
         // bus is down and its PDI ports are gone — report not-healthy without
@@ -287,6 +288,7 @@ impl WagoBus {
             return Inputs {
                 bale_full: false,
                 knife_in: false,
+                bale_open: false,
                 healthy: false,
             };
         }
@@ -301,6 +303,7 @@ impl WagoBus {
         Inputs {
             bale_full: bit(byte, BIT_BALE_FULL),
             knife_in: bit(byte, BIT_KNIFE_IN),
+            bale_open: bit(byte, BIT_BALE_OPEN),
             healthy: self.is_healthy(),
         }
     }

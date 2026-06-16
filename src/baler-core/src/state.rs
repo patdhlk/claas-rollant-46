@@ -13,6 +13,8 @@ pub enum Action {
     FireWrap,
     FireKnife,
     ResetSession,
+    /// Correct the session counter by this signed delta (operator ±1, REQ_0007).
+    AdjustSession(i8),
     ResetTotal,
     SwitchToEthernet,
     SwitchToEthercat,
@@ -100,8 +102,10 @@ impl BalerState {
         match cmd {
             Command::Wrap => self.require_operational().map(|_| Action::FireWrap),
             Command::ToggleKnife => self.require_operational().map(|_| Action::FireKnife),
-            // Counter resets are harmless bookkeeping — allowed in any mode.
+            // Counter resets and the manual session correction are harmless
+            // bookkeeping — allowed in any mode.
             Command::ResetSession => Ok(Action::ResetSession),
+            Command::AdjustSession { delta } => Ok(Action::AdjustSession(delta)),
             Command::ResetTotal => Ok(Action::ResetTotal),
             Command::EnterEthernet => match self.mode {
                 Mode::Ethernet => Err(Reject::AlreadyEthernet),
@@ -280,5 +284,25 @@ mod tests {
         let mut s = BalerState::new(); // Initializing
         assert_eq!(s.handle(Command::ResetSession, false), Ok(Action::ResetSession));
         assert_eq!(s.handle(Command::ResetTotal, false), Ok(Action::ResetTotal));
+    }
+
+    #[test]
+    fn session_correction_allowed_in_any_mode_and_carries_the_delta() {
+        // Initializing: the manual correction is bookkeeping, allowed like a reset.
+        let mut s = BalerState::new();
+        assert_eq!(
+            s.handle(Command::AdjustSession { delta: 1 }, false),
+            Ok(Action::AdjustSession(1))
+        );
+        assert_eq!(
+            s.handle(Command::AdjustSession { delta: -1 }, false),
+            Ok(Action::AdjustSession(-1))
+        );
+        // Operational too, and even while a pulse is active (it never gates).
+        let mut s = operational();
+        assert_eq!(
+            s.handle(Command::AdjustSession { delta: -1 }, true),
+            Ok(Action::AdjustSession(-1))
+        );
     }
 }

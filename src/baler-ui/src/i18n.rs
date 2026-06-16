@@ -88,6 +88,8 @@ pub struct Strings {
     pub sk_knife_toggle: &'static str,
     pub sk_knife_active: &'static str,
     pub sk_reset_session: &'static str,
+    pub sk_session_plus: &'static str,
+    pub sk_session_minus: &'static str,
     pub sk_service: &'static str,
 
     // Service screen
@@ -137,6 +139,8 @@ pub const EN: Strings = Strings {
     sk_knife_toggle: "TOGGLE KNIVES",
     sk_knife_active: "KNIVES…",
     sk_reset_session: "RESET SESSION",
+    sk_session_plus: "COUNT +1",
+    sk_session_minus: "COUNT -1",
     sk_service: "SERVICE",
 
     // Service screen
@@ -186,6 +190,8 @@ pub const DE: Strings = Strings {
     sk_knife_toggle: "MESSER SCHALTEN",
     sk_knife_active: "MESSER…",
     sk_reset_session: "SCHICHT NULLEN",
+    sk_session_plus: "ZÄHLER +1",
+    sk_session_minus: "ZÄHLER -1",
     sk_service: "WARTUNG",
 
     // Service screen
@@ -319,6 +325,8 @@ mod tests {
         ("sk_knife_toggle", |s| s.sk_knife_toggle),
         ("sk_knife_active", |s| s.sk_knife_active),
         ("sk_reset_session", |s| s.sk_reset_session),
+        ("sk_session_plus", |s| s.sk_session_plus),
+        ("sk_session_minus", |s| s.sk_session_minus),
         ("sk_service", |s| s.sk_service),
         // Service screen
         ("service_title", |s| s.service_title),
@@ -448,7 +456,7 @@ mod tests {
     #[test]
     fn accessor_count_matches_expectation() {
         // Update this when new fields are added to Strings AND ACCESSORS.
-        const EXPECTED_FIELD_COUNT: usize = 36;
+        const EXPECTED_FIELD_COUNT: usize = 38;
         assert_eq!(
             ACCESSORS.len(),
             EXPECTED_FIELD_COUNT,

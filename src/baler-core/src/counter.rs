@@ -39,10 +39,19 @@ impl CounterStore {
         self.counters
     }
 
-    /// Increment both counters by one (a clean wrap completion, REQ_0004).
-    pub fn increment_wrap(&mut self) -> io::Result<()> {
+    /// Increment both counters by one — a bale was ejected, detected on the
+    /// rising edge of the baler-fully-open input (DI3/ch3, REQ_0004).
+    pub fn increment_bale(&mut self) -> io::Result<()> {
         self.counters.session = self.counters.session.saturating_add(1);
         self.counters.total = self.counters.total.saturating_add(1);
+        self.persist()
+    }
+
+    /// Manually correct the session counter by `delta` (operator ±1, REQ_0007).
+    /// Only the session moves; the total is never touched, and a decrement past
+    /// zero saturates at zero.
+    pub fn adjust_session(&mut self, delta: i64) -> io::Result<()> {
+        self.counters.session = self.counters.session.saturating_add_signed(delta);
         self.persist()
     }
 
@@ -112,8 +121,8 @@ mod tests {
     fn increment_persists_and_reloads() {
         let p = scratch("increment");
         let mut c = CounterStore::load(&p).unwrap();
-        c.increment_wrap().unwrap();
-        c.increment_wrap().unwrap();
+        c.increment_bale().unwrap();
+        c.increment_bale().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 2, total: 2 });
 
         // A fresh load (e.g. after a power cycle) sees the persisted values.
@@ -126,7 +135,7 @@ mod tests {
         let p = scratch("session-reset");
         let mut c = CounterStore::load(&p).unwrap();
         for _ in 0..5 {
-            c.increment_wrap().unwrap();
+            c.increment_bale().unwrap();
         }
         c.reset_session().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 0, total: 5 });
@@ -138,9 +147,31 @@ mod tests {
     fn total_reset_is_independent() {
         let p = scratch("total-reset");
         let mut c = CounterStore::load(&p).unwrap();
-        c.increment_wrap().unwrap();
+        c.increment_bale().unwrap();
         c.reset_total().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 1, total: 0 });
+    }
+
+    #[test]
+    fn adjust_session_corrects_only_the_session_and_floors_at_zero() {
+        let p = scratch("adjust");
+        let mut c = CounterStore::load(&p).unwrap();
+        for _ in 0..3 {
+            c.increment_bale().unwrap(); // session=3, total=3
+        }
+        c.adjust_session(1).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 4, total: 3 }, "+1 touches session only");
+
+        c.adjust_session(-2).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 2, total: 3 }, "-2 touches session only");
+
+        // A decrement past zero saturates at zero; total is never touched.
+        c.adjust_session(-10).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 0, total: 3 }, "decrement floors at zero");
+
+        // The correction persists across a reload.
+        let reloaded = CounterStore::load(&p).unwrap();
+        assert_eq!(reloaded.snapshot(), Counters { session: 0, total: 3 });
     }
 
     #[test]

@@ -157,20 +157,32 @@ fn run_ethercat(
 
     let mut control = Control::new(COUNTER_PATH)?;
 
-    // ethercrab enumerates the bus ONCE at connector construction and never
-    // re-scans. If eth0 has no carrier yet (boot race: the daemon starts a couple
-    // of seconds after boot, before the PHY/coupler link is up) that one scan
-    // fails with ENETDOWN and the connector is wedged `Down` forever. So wait for
-    // the link to come up before building the connector (ISSUE_0009).
-    wait_for_link(NIC, Duration::from_secs(20));
-
     // Transport to baler-ui over taktora `transport-iox` (ISSUE_0011). taktora's
     // channel handles are `Send`, so — unlike the old `baler-ipc` ports (which
     // held an `Rc` and needed a separate relay thread + mpsc bridge) — the link
     // moves straight into the executor's control item below and is pumped inline
     // on the 10 ms cycle. The boot race is handled inside `DaemonLink::new`.
+    //
+    // Built BEFORE the link wait so the panel can show a "no EtherCAT link"
+    // message while we wait for the cable, instead of a silent reboot loop.
     #[cfg(feature = "transport")]
     let link = transport::DaemonLink::new()?;
+
+    // ethercrab enumerates the bus ONCE at connector construction and never
+    // re-scans. If eth0 has no carrier (no cable/coupler, or a boot race where the
+    // daemon starts before the PHY link is up) that one scan fails with ENETDOWN
+    // and the connector wedges `Down` forever — so wait for carrier before building
+    // it (ISSUE_0009).
+    //
+    // Critically, wait while petting the hardware watchdog and publishing a fault
+    // snapshot: the daemon is *deliberately* waiting, not hung. The old blind 20 s
+    // wait did neither, so on a cable-less boot the 15 s watchdog fired mid-wait,
+    // systemd respawned, and the device reboot-looped until the bootloader's
+    // boot-count gave up — an operator message is far more useful (ISSUE_0010).
+    wait_for_carrier(NIC, &mut *wd, || {
+        #[cfg(feature = "transport")]
+        link.publish(&control.idle_snapshot(baler_core::Mode::Fault));
+    });
 
     // One worker, exactly like the upstream example that reaches `Up`. The
     // connector's own tokio runtime (rt-multi-thread) drives ethercrab's
@@ -268,12 +280,18 @@ fn run_ethercat(
     Ok(())
 }
 
-/// Block until `nic` reports a usable link (operstate `up` or carrier `1`), or
-/// `timeout` elapses. Best-effort `ip link set <nic> up` first, since raw EtherCAT
-/// frames need the interface administratively up. Returns either way — the
-/// restart-until-Up backstop covers the timeout case (ISSUE_0009).
+/// Block until `nic` reports a usable link (operstate `up` or carrier `1`).
+/// Best-effort `ip link set <nic> up` first, since raw EtherCAT frames need the
+/// interface administratively up.
+///
+/// Unlike a plain sleep-poll, this waits *indefinitely* and on every poll pets the
+/// hardware `watchdog` and runs `on_wait` (publishes the "no link" fault snapshot
+/// to the panel). The daemon is deliberately parked here when the cable/coupler is
+/// absent — keeping the SoC watchdog fed is what turns a bootloader-bricking reboot
+/// loop into a clear operator message (ISSUE_0010). Poll period (200 ms) is far
+/// inside the 15 s watchdog window.
 #[cfg(feature = "ethercat")]
-fn wait_for_link(nic: &str, timeout: Duration) {
+fn wait_for_carrier(nic: &str, watchdog: &mut dyn crate::ports::Watchdog, mut on_wait: impl FnMut()) {
     let _ = std::process::Command::new("ip")
         .args(["link", "set", nic, "up"])
         .status();
@@ -281,6 +299,7 @@ fn wait_for_link(nic: &str, timeout: Duration) {
     let started = std::time::Instant::now();
     let operstate = format!("/sys/class/net/{nic}/operstate");
     let carrier = format!("/sys/class/net/{nic}/carrier");
+    let mut announced = false;
     loop {
         let up = std::fs::read_to_string(&operstate).map(|s| s.trim() == "up").unwrap_or(false);
         let has_carrier = std::fs::read_to_string(&carrier).map(|s| s.trim() == "1").unwrap_or(false);
@@ -288,9 +307,13 @@ fn wait_for_link(nic: &str, timeout: Duration) {
             eprintln!("[diag] {nic} link ready (operstate up={up}, carrier={has_carrier}) after {:?}", started.elapsed());
             return;
         }
-        if started.elapsed() >= timeout {
-            eprintln!("[diag] {nic} still no carrier after {:?}; proceeding (restart-until-up will retry)", started.elapsed());
-            return;
+        // Deliberately waiting for the cable: keep the watchdog alive and surface a
+        // message, then poll again well within the watchdog window.
+        watchdog.pet();
+        on_wait();
+        if !announced {
+            eprintln!("[diag] {nic} no carrier — waiting for the EtherCAT cable (watchdog kept alive, panel showing fault)…");
+            announced = true;
         }
         std::thread::sleep(Duration::from_millis(200));
     }

@@ -99,9 +99,14 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    :refines: FEAT_0001
 
    The system shall use systemd ``Restart=always`` on both services, a hardware
-   ``/dev/watchdog`` petted only by a healthy daemon scan loop, and an iceoryx2
+   ``/dev/watchdog`` petted by the daemon while its loop is making progress (a
+   hung loop stops the keepalives and lets the SoC reset), and an iceoryx2
    heartbeat for status. The coupler's 50 ms SM watchdog shall serve as the
-   output safety backstop.
+   output safety backstop. When the EtherCAT carrier is absent (no cable or
+   coupler) the daemon shall keep petting the watchdog while it waits for the link
+   and display a "no EtherCAT link — check cable/coupler" fault message, rather
+   than letting an un-petted bring-up wait reboot-loop the device into its
+   bootloader.
 
 .. req:: Boot command gating
    :id: REQ_0011

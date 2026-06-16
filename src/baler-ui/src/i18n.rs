@@ -158,7 +158,7 @@ pub const EN: Strings = Strings {
 
     // Fault screen
     fault_title: "⚠ FAULT",
-    fault_detail: "Outputs dropped by the coupler watchdog.\nClears automatically when the bus recovers.",
+    fault_detail: "No EtherCAT link — check the cable/coupler.\nOutputs are off; clears automatically when the bus recovers.",
     fault_hint: "F6 → SERVICE  ·  Ethernet maintenance mode",
 
     // State-derived texts
@@ -207,7 +207,7 @@ pub const DE: Strings = Strings {
 
     // Fault screen
     fault_title: "⚠ STÖRUNG",
-    fault_detail: "Ausgänge durch Koppler-Watchdog abgeschaltet.\nWird automatisch zurückgesetzt, sobald der Bus wieder verfügbar ist.",
+    fault_detail: "Keine EtherCAT-Verbindung — Kabel/Koppler prüfen.\nAusgänge sind aus; wird automatisch zurückgesetzt, sobald der Bus verfügbar ist.",
     fault_hint: "F6 → WARTUNG  ·  Ethernet-Wartungsmodus",
 
     // State-derived texts

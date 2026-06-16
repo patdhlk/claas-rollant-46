@@ -15,7 +15,7 @@ use baler_core::counter::CounterStore;
 use baler_core::input_conditioner::Debouncer;
 use baler_core::pulse::{PulseEngine, PulseEvent};
 use baler_core::state::{Action, BalerState};
-use baler_core::{Command, KnifePos, StateSnapshot};
+use baler_core::{Command, KnifePos, Mode, StateSnapshot};
 
 use crate::ports::{BusController, Inputs, NetworkController, Outputs};
 
@@ -238,6 +238,34 @@ impl Control {
             ip_valid: self.last_ip.is_some(),
         }
     }
+
+    /// A snapshot for a pre-bus state — used while the EtherCAT daemon is waiting
+    /// for the eth0 carrier before the connector exists (no cable/coupler). Reports
+    /// `mode` (typically [`Mode::Fault`], which raises the panel's fault overlay)
+    /// with current counters and everything else idle/unknown, so the operator sees
+    /// a message instead of a reboot loop while the watchdog keeps being petted.
+    ///
+    /// Only the EtherCAT+transport run path publishes it; without `transport` there
+    /// is no UI to receive it, so it is dead there (the unit test still covers it).
+    #[cfg_attr(not(feature = "transport"), allow(dead_code))]
+    pub fn idle_snapshot(&self, mode: Mode) -> StateSnapshot {
+        let counts = self.counters.snapshot();
+        StateSnapshot {
+            mode,
+            bale_full: false,
+            knife: KnifePos::Unknown,
+            wrap_armed: false,
+            full_latched: false,
+            wrap_active: false,
+            knife_active: false,
+            session: counts.session,
+            total: counts.total,
+            di1: false,
+            di2: false,
+            ip: [0, 0, 0, 0],
+            ip_valid: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +330,29 @@ mod tests {
             knife_in: false,
             healthy: true,
         }
+    }
+
+    #[test]
+    fn idle_snapshot_reports_the_given_mode_with_idle_io_and_live_counters() {
+        let mut c = Control::new(scratch("idlesnap")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        // Land a wrap so the counters are non-zero, then drive the pulse to
+        // completion so the count persists.
+        c.step(healthy(), vec![], &mut net, &mut bus);
+        c.step(healthy(), vec![Command::Wrap], &mut net, &mut bus);
+        for _ in 0..600 {
+            c.step(healthy(), vec![], &mut net, &mut bus);
+        }
+
+        // Waiting-for-link snapshot: Fault overlay, unknown IO, but counters live.
+        let snap = c.idle_snapshot(Mode::Fault);
+        assert_eq!(snap.mode, Mode::Fault);
+        assert_eq!(snap.knife, KnifePos::Unknown);
+        assert!(!snap.bale_full && !snap.wrap_active && !snap.knife_active);
+        assert!(!snap.di1 && !snap.di2 && !snap.ip_valid);
+        assert_eq!(snap.session, 1, "counters survive into the idle snapshot");
+        assert_eq!(snap.total, 1);
     }
 
     #[test]

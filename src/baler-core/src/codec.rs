@@ -85,9 +85,9 @@ mod tests {
             Command::ResetTotal,
             Command::EnterEthernet,
             Command::ReturnToEthercat,
-            Command::ManualIo { wrap: true, knife: false },
-            Command::ManualIo { wrap: false, knife: true },
-            Command::ManualIo { wrap: true, knife: true },
+            Command::ManualIo { wrap: true, knives_in: false, knives_out: false },
+            Command::ManualIo { wrap: false, knives_in: true, knives_out: false },
+            Command::ManualIo { wrap: true, knives_in: false, knives_out: true },
         ] {
             let len = codec.encode(&cmd, &mut buf).expect("encode");
             let decoded: Command = codec.decode(&buf[..len]).expect("decode");

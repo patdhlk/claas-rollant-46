@@ -29,7 +29,9 @@ pub enum Mode {
 pub enum Command {
     /// Fire the 5 s wrap pulse (operator-confirmed, REQ_0003).
     Wrap,
-    /// Fire the 5 s knife-toggle pulse (REQ_0005).
+    /// Fire the 5 s directional knife pulse. The daemon picks the direction from
+    /// the live ch2 (DI2) value at trigger time — ch2 true → knives-in (DO2),
+    /// ch2 false → knives-out (DO3) (REQ_0005).
     ToggleKnife,
     /// Reset the session counter (operator action, REQ_0007).
     ResetSession,
@@ -41,8 +43,14 @@ pub enum Command {
     ReturnToEthercat,
     /// IO test screen: drive the outputs directly from the operator's held keys
     /// (momentary). Sent every frame while the page is open; its absence is what
-    /// the daemon's watchdog uses to fail safe (REQ_0018).
-    ManualIo { wrap: bool, knife: bool },
+    /// the daemon's watchdog uses to fail safe (REQ_0018). `knives_in`/`knives_out`
+    /// drive DO2/DO3 respectively; the daemon interlocks them so both can never be
+    /// energized together.
+    ManualIo {
+        wrap: bool,
+        knives_in: bool,
+        knives_out: bool,
+    },
 }
 
 /// Knife position as reported by DI2, or unknown while the bus is down.

@@ -19,10 +19,12 @@ pub struct Inputs {
 }
 
 // Fields are read by the real `BusIo` (EtherCatIo); the `SimBus` drops them.
+// The knife is directional: `knives_in` drives DO2, `knives_out` drives DO3.
 #[allow(dead_code)]
 pub struct Outputs {
     pub wrap: bool,
-    pub knife: bool,
+    pub knives_in: bool,
+    pub knives_out: bool,
 }
 
 /// The host/sim bus port. The EtherCAT build talks to the WAGO connector through
@@ -32,7 +34,7 @@ pub struct Outputs {
 pub trait BusIo {
     /// Read DI1/DI2 and the connector health for this scan cycle.
     fn poll(&mut self) -> Inputs;
-    /// Write DO1/DO2 for this scan cycle.
+    /// Write DO1/DO2/DO3 for this scan cycle.
     fn write(&mut self, out: Outputs);
 }
 

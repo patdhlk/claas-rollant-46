@@ -45,14 +45,17 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    completion of a wrap pulse. A pulse aborted by bus loss or daemon restart
    shall not increment any counter.
 
-.. req:: Independent knife toggle pulse
+.. req:: Directional knife pulse (in/out)
    :id: REQ_0005
    :status: open
    :refines: FEAT_0001
 
-   The daemon shall drive the knife output (DO2) as a single 5 s pulse on the
-   rising edge of the operator knife button, independently of the knife-position
-   input and of any wrap pulse; the two outputs may be active simultaneously.
+   The daemon shall drive a directional knife output. On the rising edge of the
+   operator knife button it shall sample ch2 (DI2) and fire a single 5 s pulse on
+   the knives-in output (DO2) when ch2 is true, or on the knives-out output (DO3)
+   when ch2 is false. The two knife outputs shall be mutually interlocked — never
+   energized simultaneously, even if ch2 changes mid-pulse — while a knife pulse
+   remains independent of, and may run simultaneously with, a wrap pulse.
 
 .. req:: Input conditioning and edge detection
    :id: REQ_0006
@@ -144,9 +147,9 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
    :refines: FEAT_0001
 
    IO shall use the WAGO 750-354 coupler with a 750-430 input module
-   (DI1 = bale full, DI2 = knife position with 24 V = knives in) and a 750-530
-   output module (DO1 = wrap, DO2 = knife switch), with process data at byte
-   offset 4, a 10 ms scan, and a 50 ms SM watchdog, built on the taktora
+   (DI1 = bale full, DI2/ch2 = knife position with 24 V = knives in) and a 750-530
+   output module (DO1 = wrap, DO2 = knives-in, DO3 = knives-out), with process data
+   at byte offset 4, a 10 ms scan, and a 50 ms SM watchdog, built on the taktora
    ethercat-wago-coupler example.
 
 .. req:: Build and deployment
@@ -177,9 +180,11 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
 
    The UI shall provide a PIN-gated IO test screen (reached from Service) that
    lets the operator momentarily energize each output (hold-to-energize DO1 wrap,
-   DO2 knife) and observe the live, un-debounced inputs (DI1, DI2). While the
-   screen is active the daemon shall enter a manual-IO mode that suspends the
-   normal control state machine and drives outputs from the operator's held keys.
+   DO2 knives-in, DO3 knives-out) and observe the live, un-debounced inputs
+   (DI1, DI2). While the screen is active the daemon shall enter a manual-IO mode
+   that suspends the normal control state machine and drives outputs from the
+   operator's held keys, with the two knife outputs interlocked so DO2 and DO3 are
+   never energized together.
    Manual outputs shall only be applied while the bus is operational. A command
    watchdog shall de-energize all outputs and exit manual-IO mode if no manual-IO
    command is received within a short window (≤ 300 ms), so a released key, a UI

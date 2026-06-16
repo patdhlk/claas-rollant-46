@@ -106,7 +106,8 @@ stories, and the decisions that shape an implementation. Requirements
    - **Inputs** are debounced, edge-detected, status-only; bale-full clears with
      its input.
    - **Counters** persist via temp-file + ``rename`` on each change, reload on
-     boot. Session resets on operator action only; total reset is PIN-gated.
+     boot. Session resets on operator action only and can be manually corrected
+     ±1 (Main F4/F5, session-only, floors at zero); total reset is PIN-gated.
    - **Mode switch** is idle-only and behind the PIN-gated service screen. Entering
      Ethernet stops EtherCAT, brings up a configurable static IP (default on the
      ``192.168.1.x`` subnet), and displays it. No built-in updater; updates are
@@ -118,7 +119,8 @@ stories, and the decisions that shape an implementation. Requirements
      (outputs dropped by watchdog, softkeys locked, inputs shown unknown,
      in-flight pulse aborted/uncounted); auto-clear to idle on recovery.
    - **UI**: softkey model (F1 Wrap, F2 Toggle Knives, F3 Reset Session,
-     F6 Service), four screens (Main / Service-PIN / Ethernet / Fault overlay),
+     F4 Count +1, F5 Count −1, F6 Service), four screens (Main / Service-PIN /
+     Ethernet / Fault overlay),
      LED beacon (green idle, amber-pulse full, red fault, blue Ethernet, white
      flash on pulse), blinking done in software.
    - **IO**: WAGO 750-354 / 750-430 / 750-530; DI1 = bale full, DI2/ch2 = knife

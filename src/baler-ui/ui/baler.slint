@@ -23,6 +23,8 @@ export struct I18n {
     sk-knife-toggle: string,
     sk-knife-active: string,
     sk-reset-session: string,
+    sk-session-plus: string,
+    sk-session-minus: string,
     sk-service: string,
     // Service
     service-title: string,
@@ -245,8 +247,8 @@ export component AppWindow inherits Window {
                     label: root.knife-active ? root.tr.sk-knife-active : root.tr.sk-knife-toggle;
                 }
                 Softkey { key: "F3"; label: root.tr.sk-reset-session; }
-                Softkey { key: "F4"; label: ""; enabled: false; }
-                Softkey { key: "F5"; label: ""; enabled: false; }
+                Softkey { key: "F4"; label: root.tr.sk-session-plus; }
+                Softkey { key: "F5"; label: root.tr.sk-session-minus; }
                 Softkey { key: "F6"; label: root.tr.sk-service; }
             }
         }

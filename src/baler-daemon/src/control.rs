@@ -176,6 +176,11 @@ impl Control {
                         eprintln!("[control] session reset persist failed: {e}");
                     }
                 }
+                Ok(Action::AdjustSession(delta)) => {
+                    if let Err(e) = self.counters.adjust_session(delta as i64) {
+                        eprintln!("[control] session correction persist failed: {e}");
+                    }
+                }
                 Ok(Action::ResetTotal) => {
                     if let Err(e) = self.counters.reset_total() {
                         eprintln!("[control] total reset persist failed: {e}");
@@ -670,6 +675,38 @@ mod tests {
         assert!(!last.wrap_active, "the pulse has ended");
         assert_eq!(last.session, 0, "a wrap no longer counts a bale");
         assert_eq!(last.total, 0);
+    }
+
+    #[test]
+    fn manual_session_correction_moves_session_only_and_floors_at_zero() {
+        let mut c = Control::new(scratch("sessadjust")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        // Land two bales via DI3 edges so session/total are non-zero.
+        for _ in 0..DEBOUNCE {
+            c.step(open(), vec![], &mut net, &mut bus);
+        }
+        for _ in 0..DEBOUNCE {
+            c.step(healthy(), vec![], &mut net, &mut bus);
+        }
+        let mut last = c.snapshot();
+        for _ in 0..DEBOUNCE {
+            last = c.step(open(), vec![], &mut net, &mut bus).1;
+        }
+        assert_eq!((last.session, last.total), (2, 2));
+
+        // +1 corrects the session only.
+        let (_, s) = c.step(healthy(), vec![Command::AdjustSession { delta: 1 }], &mut net, &mut bus);
+        assert_eq!((s.session, s.total), (3, 2), "+1 touches session only");
+
+        // Decrement past zero floors at zero; total never moves.
+        let mut s = s;
+        for _ in 0..10 {
+            s = c.step(healthy(), vec![Command::AdjustSession { delta: -1 }], &mut net, &mut bus).1;
+        }
+        assert_eq!((s.session, s.total), (0, 2), "decrement floors at zero, total untouched");
     }
 
     #[test]

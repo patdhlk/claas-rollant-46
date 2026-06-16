@@ -47,6 +47,14 @@ impl CounterStore {
         self.persist()
     }
 
+    /// Manually correct the session counter by `delta` (operator ±1, REQ_0007).
+    /// Only the session moves; the total is never touched, and a decrement past
+    /// zero saturates at zero.
+    pub fn adjust_session(&mut self, delta: i64) -> io::Result<()> {
+        self.counters.session = self.counters.session.saturating_add_signed(delta);
+        self.persist()
+    }
+
     pub fn reset_session(&mut self) -> io::Result<()> {
         self.counters.session = 0;
         self.persist()
@@ -142,6 +150,28 @@ mod tests {
         c.increment_bale().unwrap();
         c.reset_total().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 1, total: 0 });
+    }
+
+    #[test]
+    fn adjust_session_corrects_only_the_session_and_floors_at_zero() {
+        let p = scratch("adjust");
+        let mut c = CounterStore::load(&p).unwrap();
+        for _ in 0..3 {
+            c.increment_bale().unwrap(); // session=3, total=3
+        }
+        c.adjust_session(1).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 4, total: 3 }, "+1 touches session only");
+
+        c.adjust_session(-2).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 2, total: 3 }, "-2 touches session only");
+
+        // A decrement past zero saturates at zero; total is never touched.
+        c.adjust_session(-10).unwrap();
+        assert_eq!(c.snapshot(), Counters { session: 0, total: 3 }, "decrement floors at zero");
+
+        // The correction persists across a reload.
+        let reloaded = CounterStore::load(&p).unwrap();
+        assert_eq!(reloaded.snapshot(), Counters { session: 0, total: 3 });
     }
 
     #[test]

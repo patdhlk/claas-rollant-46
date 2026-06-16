@@ -51,6 +51,10 @@ pub enum Command {
         knives_in: bool,
         knives_out: bool,
     },
+    /// Manually correct the session counter by `delta` (operator ±1, REQ_0007).
+    /// Only the session moves; the total is never touched. Appended last so the
+    /// existing variants keep their postcard discriminants.
+    AdjustSession { delta: i8 },
 }
 
 /// Knife position as reported by DI2, or unknown while the bus is down.

@@ -76,8 +76,10 @@ Requirement needs (``req``) live here. Each ``.. req::`` carries a stable
 
    Counters shall persist across power loss via an atomic write (temp file plus
    rename) on each change and reload on boot. The session counter shall reset
-   only on explicit operator action; the total counter reset shall be available
-   only behind the PIN-gated service screen.
+   only on explicit operator action; the operator may also manually correct the
+   session counter by ±1 (Main F4 = +1, F5 = −1) — the total is never touched and
+   a decrement saturates at zero. The total counter reset shall be available only
+   behind the PIN-gated service screen.
 
 .. req:: Idle-only mode switch
    :id: REQ_0008

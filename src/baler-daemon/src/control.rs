@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use baler_core::counter::CounterStore;
 use baler_core::input_conditioner::Debouncer;
-use baler_core::pulse::{PulseEngine, PulseEvent};
+use baler_core::pulse::PulseEngine;
 use baler_core::state::{Action, BalerState};
 use baler_core::{Command, KnifePos, Mode, StateSnapshot};
 
@@ -41,6 +41,11 @@ pub struct Control {
     knives_out: PulseEngine,
     full_db: Debouncer,
     knife_db: Debouncer,
+    /// Baler-fully-open (DI3/ch3) debouncer. Its debounced rising edge counts one
+    /// ejected bale (REQ_0004); `last_open_level` holds the previous debounced
+    /// level so each open is counted exactly once.
+    open_db: Debouncer,
+    last_open_level: bool,
     last_ip: Option<Ipv4Addr>,
     /// Bale-full attention latch: cycles remaining that "FULL" stays shown after a
     /// rising debounced DI1, cleared early by a wrap (REQ_0017).
@@ -48,6 +53,7 @@ pub struct Control {
     /// Raw (un-debounced) discrete inputs, surfaced for the IO test screen (REQ_0018).
     last_di1: bool,
     last_di2: bool,
+    last_di3: bool,
     /// Manual-IO mode (REQ_0018): cycles remaining before the command watchdog
     /// fails safe. >0 means the IO test screen is driving the outputs directly;
     /// `manual_wrap`/`manual_knives_in`/`manual_knives_out` are the latest
@@ -69,10 +75,13 @@ impl Control {
             knives_out: PulseEngine::new(PULSE),
             full_db: Debouncer::new(DEBOUNCE, false),
             knife_db: Debouncer::new(DEBOUNCE, false),
+            open_db: Debouncer::new(DEBOUNCE, false),
+            last_open_level: false,
             last_ip: None,
             full_latch_remaining: 0,
             last_di1: false,
             last_di2: false,
+            last_di3: false,
             manual_io_remaining: 0,
             manual_wrap: false,
             manual_knives_in: false,
@@ -96,11 +105,25 @@ impl Control {
         // Raw inputs for the IO test screen (un-debounced; REQ_0018).
         self.last_di1 = inputs.bale_full;
         self.last_di2 = inputs.knife_in;
+        self.last_di3 = inputs.bale_open;
         self.full_db.update(inputs.bale_full);
         self.knife_db.update(inputs.knife_in);
+        self.open_db.update(inputs.bale_open);
         if inputs.healthy {
             self.state.on_inputs(self.full_db.level(), self.knife_db.level());
         }
+
+        // Bale count (REQ_0004): one ejected bale per debounced rising edge of the
+        // baler-fully-open input (DI3/ch3), counted only while the bus is healthy
+        // so a gate left open across a fault doesn't double-count on recovery.
+        let open_level = self.open_db.level();
+        if inputs.healthy && open_level && !self.last_open_level {
+            if let Err(e) = self.counters.increment_bale() {
+                // A failed persist must not crash the safety loop; log and carry on.
+                eprintln!("[control] bale counter persist failed: {e}");
+            }
+        }
+        self.last_open_level = open_level;
 
         // Bale-full attention latch (REQ_0017): (re)arm while debounced DI1 is
         // true, otherwise count down. `full_latched` (in the snapshot) stays true
@@ -197,14 +220,10 @@ impl Control {
                 knives_out: inputs.healthy && self.manual_knives_out && !knives_in,
             }
         } else {
-            // Normal control: independent pulses; a wrap counts only on clean
-            // completion (REQ_0004).
-            if let PulseEvent::Completed = self.wrap.tick(SCAN, inputs.healthy) {
-                if let Err(e) = self.counters.increment_wrap() {
-                    // A failed persist must not crash the safety loop; log and carry on.
-                    eprintln!("[control] wrap counter persist failed: {e}");
-                }
-            }
+            // Normal control: independent pulses. The wrap pulse still fires the
+            // wrapper, but no longer drives the bale count — counting now keys off
+            // the DI3 baler-open edge above (REQ_0004).
+            let _ = self.wrap.tick(SCAN, inputs.healthy);
             let _ = self.knives_in.tick(SCAN, inputs.healthy);
             let _ = self.knives_out.tick(SCAN, inputs.healthy);
             Outputs {
@@ -234,6 +253,7 @@ impl Control {
             total: counts.total,
             di1: self.last_di1,
             di2: self.last_di2,
+            di3: self.last_di3,
             ip: self.last_ip.map(|i| i.octets()).unwrap_or([0, 0, 0, 0]),
             ip_valid: self.last_ip.is_some(),
         }
@@ -262,6 +282,7 @@ impl Control {
             total: counts.total,
             di1: false,
             di2: false,
+            di3: false,
             ip: [0, 0, 0, 0],
             ip_valid: false,
         }
@@ -320,6 +341,7 @@ mod tests {
         Inputs {
             bale_full: false,
             knife_in: false,
+            bale_open: false,
             healthy: true,
         }
     }
@@ -328,6 +350,17 @@ mod tests {
         Inputs {
             bale_full: true,
             knife_in: false,
+            bale_open: false,
+            healthy: true,
+        }
+    }
+
+    /// Healthy bus with the baler-fully-open (DI3) input asserted.
+    fn open() -> Inputs {
+        Inputs {
+            bale_full: false,
+            knife_in: false,
+            bale_open: true,
             healthy: true,
         }
     }
@@ -337,12 +370,10 @@ mod tests {
         let mut c = Control::new(scratch("idlesnap")).unwrap();
         let mut net = FakeNet::default();
         let mut bus = FakeBus::default();
-        // Land a wrap so the counters are non-zero, then drive the pulse to
-        // completion so the count persists.
+        // Land a bale (a debounced DI3 open edge) so the counters are non-zero.
         c.step(healthy(), vec![], &mut net, &mut bus);
-        c.step(healthy(), vec![Command::Wrap], &mut net, &mut bus);
-        for _ in 0..600 {
-            c.step(healthy(), vec![], &mut net, &mut bus);
+        for _ in 0..DEBOUNCE {
+            c.step(open(), vec![], &mut net, &mut bus);
         }
 
         // Waiting-for-link snapshot: Fault overlay, unknown IO, but counters live.
@@ -350,7 +381,7 @@ mod tests {
         assert_eq!(snap.mode, Mode::Fault);
         assert_eq!(snap.knife, KnifePos::Unknown);
         assert!(!snap.bale_full && !snap.wrap_active && !snap.knife_active);
-        assert!(!snap.di1 && !snap.di2 && !snap.ip_valid);
+        assert!(!snap.di1 && !snap.di2 && !snap.di3 && !snap.ip_valid);
         assert_eq!(snap.session, 1, "counters survive into the idle snapshot");
         assert_eq!(snap.total, 1);
     }
@@ -531,7 +562,7 @@ mod tests {
         c.step(healthy(), vec![], &mut net, &mut bus);
 
         // Bus down: manual-IO must not energize anything.
-        let down = Inputs { bale_full: false, knife_in: false, healthy: false };
+        let down = Inputs { bale_full: false, knife_in: false, bale_open: false, healthy: false };
         let (out, _) = c.step(
             down,
             vec![Command::ManualIo { wrap: true, knives_in: true, knives_out: true }],
@@ -562,7 +593,7 @@ mod tests {
     /// Steady `knife_in` (ch2) input until the debounce settles, so direction
     /// selection sees the intended level.
     fn knives_in_input() -> Inputs {
-        Inputs { bale_full: false, knife_in: true, healthy: true }
+        Inputs { bale_full: false, knife_in: true, bale_open: false, healthy: true }
     }
 
     #[test]
@@ -622,22 +653,88 @@ mod tests {
     }
 
     #[test]
-    fn completed_wrap_pulse_increments_counters_once() {
-        let mut c = Control::new(scratch("complete")).unwrap();
+    fn completed_wrap_pulse_no_longer_counts() {
+        let mut c = Control::new(scratch("wrapnocount")).unwrap();
         let mut net = FakeNet::default();
         let mut bus = FakeBus::default();
         c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
         c.step(healthy(), vec![Command::Wrap], &mut net, &mut bus); // fire the pulse
 
-        // 5 s pulse at a 10 ms scan = 500 ticks; drive well past completion.
+        // Drive the 5 s pulse well past completion — counting now keys off DI3,
+        // not the wrap, so the count must stay at zero.
         let mut last = c.snapshot();
         for _ in 0..600 {
             last = c.step(healthy(), vec![], &mut net, &mut bus).1;
         }
 
-        assert_eq!(last.session, 1, "a clean wrap counts exactly once");
-        assert_eq!(last.total, 1);
         assert!(!last.wrap_active, "the pulse has ended");
+        assert_eq!(last.session, 0, "a wrap no longer counts a bale");
+        assert_eq!(last.total, 0);
+    }
+
+    #[test]
+    fn di3_open_edge_counts_one_bale_after_debounce() {
+        let mut c = Control::new(scratch("baleedge")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        // Sustained DI3 only crosses the debounce after DEBOUNCE cycles; the count
+        // fires exactly once on that rising edge.
+        let mut last = c.snapshot();
+        for _ in 0..DEBOUNCE {
+            last = c.step(open(), vec![], &mut net, &mut bus).1;
+        }
+        assert_eq!(last.session, 1, "a debounced DI3 open edge counts one bale");
+        assert_eq!(last.total, 1);
+
+        // Holding DI3 high must not re-count — only the edge counts.
+        for _ in 0..50 {
+            last = c.step(open(), vec![], &mut net, &mut bus).1;
+        }
+        assert_eq!(last.session, 1, "a held-open input counts only once");
+
+        // A second open cycle (close, then open again) counts a second bale.
+        for _ in 0..DEBOUNCE {
+            c.step(healthy(), vec![], &mut net, &mut bus); // DI3 low, debounce down
+        }
+        for _ in 0..DEBOUNCE {
+            last = c.step(open(), vec![], &mut net, &mut bus).1;
+        }
+        assert_eq!(last.session, 2, "a fresh open edge counts the next bale");
+        assert_eq!(last.total, 2);
+    }
+
+    #[test]
+    fn di3_open_edge_while_unhealthy_does_not_count() {
+        let mut c = Control::new(scratch("baleunhealthy")).unwrap();
+        let mut net = FakeNet::default();
+        let mut bus = FakeBus::default();
+        c.step(healthy(), vec![], &mut net, &mut bus); // reach Operational
+
+        // DI3 asserted while the bus is down (gate opened during a fault): no count.
+        let down_open = || Inputs { bale_full: false, knife_in: false, bale_open: true, healthy: false };
+        let mut last = c.snapshot();
+        for _ in 0..10 {
+            last = c.step(down_open(), vec![], &mut net, &mut bus).1;
+        }
+        assert_eq!(last.session, 0, "an open edge during a fault must not count");
+        assert_eq!(snap_session_after_recovery(&mut c, &mut net, &mut bus), 0,
+            "a gate left open across recovery still must not count (no fresh edge)");
+    }
+
+    /// Hold DI3 high while the bus recovers; with the level already high there is
+    /// no rising edge, so no bale is counted. Returns the resulting session count.
+    fn snap_session_after_recovery(
+        c: &mut Control,
+        net: &mut dyn NetworkController,
+        bus: &mut dyn BusController,
+    ) -> u64 {
+        let mut last = c.snapshot();
+        for _ in 0..DEBOUNCE + 2 {
+            last = c.step(open(), vec![], net, bus).1;
+        }
+        last.session
     }
 
     #[test]
@@ -715,6 +812,7 @@ mod tests {
         let unhealthy = Inputs {
             bale_full: true,
             knife_in: false,
+            bale_open: false,
             healthy: false,
         };
         let (out, snap) = c.step(unhealthy, vec![], &mut net, &mut bus);
@@ -723,6 +821,6 @@ mod tests {
         assert!(!snap.bale_full, "faulted inputs report unknown");
         assert_eq!(snap.knife, KnifePos::Unknown);
         assert!(!out.wrap, "the pulse aborts low on bus loss");
-        assert_eq!(snap.session, 0, "an aborted wrap must not count");
+        assert_eq!(snap.session, 0, "no bale counted across a bus loss");
     }
 }

@@ -39,8 +39,9 @@ impl CounterStore {
         self.counters
     }
 
-    /// Increment both counters by one (a clean wrap completion, REQ_0004).
-    pub fn increment_wrap(&mut self) -> io::Result<()> {
+    /// Increment both counters by one — a bale was ejected, detected on the
+    /// rising edge of the baler-fully-open input (DI3/ch3, REQ_0004).
+    pub fn increment_bale(&mut self) -> io::Result<()> {
         self.counters.session = self.counters.session.saturating_add(1);
         self.counters.total = self.counters.total.saturating_add(1);
         self.persist()
@@ -112,8 +113,8 @@ mod tests {
     fn increment_persists_and_reloads() {
         let p = scratch("increment");
         let mut c = CounterStore::load(&p).unwrap();
-        c.increment_wrap().unwrap();
-        c.increment_wrap().unwrap();
+        c.increment_bale().unwrap();
+        c.increment_bale().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 2, total: 2 });
 
         // A fresh load (e.g. after a power cycle) sees the persisted values.
@@ -126,7 +127,7 @@ mod tests {
         let p = scratch("session-reset");
         let mut c = CounterStore::load(&p).unwrap();
         for _ in 0..5 {
-            c.increment_wrap().unwrap();
+            c.increment_bale().unwrap();
         }
         c.reset_session().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 0, total: 5 });
@@ -138,7 +139,7 @@ mod tests {
     fn total_reset_is_independent() {
         let p = scratch("total-reset");
         let mut c = CounterStore::load(&p).unwrap();
-        c.increment_wrap().unwrap();
+        c.increment_bale().unwrap();
         c.reset_total().unwrap();
         assert_eq!(c.snapshot(), Counters { session: 1, total: 0 });
     }

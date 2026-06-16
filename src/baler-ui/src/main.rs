@@ -67,6 +67,9 @@ struct LocalBackend {
     counters: baler_core::counter::CounterStore,
     sim_full: bool,
     sim_knife_in: bool,
+    /// Simulated DI3 (baler fully open). The demo pulses it for one cycle when a
+    /// wrap completes, so a bale is ejected → counted, mirroring the real DI3 edge.
+    sim_bale_open: bool,
     last_ip: Option<std::net::Ipv4Addr>,
     last: std::time::Instant,
 }
@@ -88,6 +91,7 @@ impl LocalBackend {
                 }),
             sim_full: false,
             sim_knife_in: false,
+            sim_bale_open: false,
             last_ip: None,
             last: std::time::Instant::now(),
         }
@@ -113,6 +117,7 @@ impl LocalBackend {
             total: counts.total,
             di1: self.state.bale_full(),
             di2: self.state.knife_in().unwrap_or(false),
+            di3: self.sim_bale_open,
             ip: self.last_ip.map(|i| i.octets()).unwrap_or([0, 0, 0, 0]),
             ip_valid: self.last_ip.is_some(),
         }
@@ -130,8 +135,14 @@ impl Backend for LocalBackend {
         self.state.on_bus_health(true);
         self.state.on_inputs(self.sim_full, self.sim_knife_in);
 
+        // The wrap pulse no longer counts. Instead the demo ejects a bale when a
+        // wrap completes: pulse the simulated DI3 (baler-open) for one cycle, and
+        // count on that edge — mirroring the daemon, which counts the real DI3 edge.
         if let PulseEvent::Completed = self.wrap.tick(dt, true) {
-            let _ = self.counters.increment_wrap();
+            self.sim_bale_open = true;
+            let _ = self.counters.increment_bale();
+        } else {
+            self.sim_bale_open = false;
         }
         // Either directional pulse completing simulates the knives physically
         // flipping, so successive presses exercise both DO2 and DO3 in the demo.
@@ -279,6 +290,7 @@ impl IpcBackend {
                 total: 0,
                 di1: false,
                 di2: false,
+                di3: false,
                 ip: [0, 0, 0, 0],
                 ip_valid: false,
             },
@@ -573,6 +585,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // IO test page (REQ_0018): live raw inputs + the outputs we are driving.
         ui.set_di1(snap.di1);
         ui.set_di2(snap.di2);
+        ui.set_di3(snap.di3);
         ui.set_out_wrap(io_wrap);
         ui.set_out_knives_in(io_knives_in);
         ui.set_out_knives_out(io_knives_out);

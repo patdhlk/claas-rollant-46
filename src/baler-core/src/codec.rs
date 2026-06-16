@@ -57,6 +57,7 @@ mod tests {
             total: 123_456,
             di1: true,
             di2: false,
+            di3: true,
             ip: [192, 168, 1, 102],
             ip_valid: true,
         }

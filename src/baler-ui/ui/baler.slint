@@ -139,6 +139,7 @@ export component AppWindow inherits Window {
     // IO test screen (REQ_0018): live raw inputs + currently-driven outputs.
     in property <bool> di1: false;
     in property <bool> di2: false;
+    in property <bool> di3: false;
     in property <bool> out-wrap: false;
     in property <bool> out-knives-in: false;
     in property <bool> out-knives-out: false;
@@ -483,6 +484,17 @@ export component AppWindow inherits Window {
                         padding: 14px; spacing: 6px;
                         Text { text: "DI2 KNIFE IN"; color: Theme.muted; font-size: 15px; }
                         Text { text: root.di2 ? "TRUE" : "false"; color: root.di2 ? Theme.accent : Theme.text; font-size: 30px; font-weight: 800; }
+                    }
+                }
+                Rectangle {
+                    border-radius: 8px;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: root.di3 ? Theme.accent : Theme.panel-edge;
+                    VerticalLayout {
+                        padding: 14px; spacing: 6px;
+                        Text { text: "DI3 BALER OPEN"; color: Theme.muted; font-size: 15px; }
+                        Text { text: root.di3 ? "TRUE" : "false"; color: root.di3 ? Theme.accent : Theme.text; font-size: 30px; font-weight: 800; }
                     }
                 }
             }
